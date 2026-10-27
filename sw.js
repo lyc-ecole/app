@@ -2,7 +2,7 @@
 // Change VERSION each time you upload new files so phones pick up the update.
 const VERSION = 'lyc-v19';
 const SHELL = ['./', 'index.html', 'app.js', 'firebase-config.js', 'manifest.webmanifest',
-  'img/logo.png', 'img/stamp.png', 'icons/icon-192.png', 'icons/icon-512.png'];
+  'logo.png', 'stamp.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
