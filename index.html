@@ -7,8 +7,8 @@
 <meta name="description" content="Les Yeux du Coeur – Bilingual Nursery &amp; Primary School, Limbe">
 <meta name="theme-color" content="#C12631">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" type="image/png" href="icon-192.png">
-<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -97,6 +97,8 @@ button.row:hover{background:var(--paper)}
 .btn.sm{min-height:34px;padding:6px 12px;font-size:.88rem}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .btn svg{width:20px;height:20px;flex:none}
+.tight th,.tight td{padding:6px 6px;font-size:.8rem}
+.tight td[style*="white-space:normal"]{text-align:left}
 .iconbtn{display:grid;place-items:center;width:40px;height:40px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer;flex:none}
 .iconbtn svg{width:22px;height:22px}
 .idcard{position:relative;width:100%;max-width:440px;background:#fff;color:#111;border:1px solid #c9ced8;border-radius:12px;overflow:hidden;font-family:Arial,Helvetica,sans-serif}
@@ -216,8 +218,8 @@ th{font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mu
 <body>
 <div id="app"></div>
 <div id="toast" class="toast" hidden></div>
-<img id="logoImg" alt="" hidden src="logo.png">
-<img id="stampImg" alt="" hidden src="stamp.png">
+<img id="logoImg" alt="" hidden src="img/logo.png">
+<img id="stampImg" alt="" hidden src="img/stamp.png">
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>

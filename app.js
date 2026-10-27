@@ -44,7 +44,7 @@ const OBJECTS = [
   {k:'exam', fr:'Frais d’examen (Class 6)', en:'Examination fee (Class 6)', fees:true},
   {k:'art', fr:'Articles', en:'Articles', fees:true},
   {k:'pack1', fr:'1re tranche complète', en:'1st installment (all items)', fees:true},
-  {k:'sport', fr:'Tenue de sport', en:'Sportswear', price: 3500},
+  {k:'sport', fr:'Tenue de sport', en:'Sportswear', old:true},
   {k:'t1', fr:'Scolarité – First Term', en:'School fees – First Term', fees:true, old:true},
   {k:'t2', fr:'Scolarité – Second Term', en:'School fees – Second Term', fees:true, old:true},
   {k:'t3', fr:'Scolarité – Third Term', en:'School fees – Third Term', fees:true, old:true},
@@ -116,7 +116,7 @@ const S = {
   db:null, userCap:null, me: lsGet('lyc-me', null) || (() => { const v = 'local-' + uid(); lsSet('lyc-me', v); return v; })(),
   canWrite:true, dbOk:null, profile: null,
   students:[], payments:[], messages:[], att:{}, stats:{}, config:{},
-  staff:{}, users:[], loaded:{students:false, payments:false, messages:false, att:false, stats:false, config:false, staff:false, users:false},
+  staff:{}, expenses:[], finance:null, events:[], payroll:null, fundreqs:[], expreqs:[], grades:{}, works:[], workchecks:[], users:[], loaded:{expenses:false, students:false, payments:false, messages:false, att:false, stats:false, config:false, staff:false, users:false},
   auth:null, user:null, authReady:false, setupNeeded:false, blocked:false, configMissing:false,
   view:null, filter: lsGet('lyc-filter', 'all'), apDate: today(), apLevel:null, draft:null, pendingRender:false, sheet:null
 };
@@ -130,7 +130,7 @@ const feesSet = () => true;
 const activeStudents = () => S.students.filter(s => s.status !== 'left').sort((a,b) => a.name.localeCompare(b.name, 'fr'));
 const byLevel = lv => activeStudents().filter(s => s.level === lv);
 const student = id => S.students.find(s => s.id === id);
-const ROLE_NAME = () => ({president: T('Président', 'Chairman'), vicepresident: T('Vice-président', 'Vice-chairman'), direction: T('Directrice', 'Head teacher'), assistant: T('Assistante directrice', 'Assistant head teacher'), teacher: T('Enseignant titulaire', 'Class teacher'), accountant: T('Comptable', 'Bursar'), secretary: T('Secrétaire', 'Secretary'), parent: T('Parent', 'Parent')});
+const ROLE_NAME = () => ({supervisor: T('Surveillant général et économe', 'Senior supervisor and steward'), president: T('Président', 'Chairman'), vicepresident: T('Vice-président', 'Vice-chairman'), direction: T('Directrice', 'Head teacher'), assistant: T('Assistante directrice', 'Assistant head teacher'), teacher: T('Enseignant titulaire', 'Class teacher'), accountant: T('Secrétaire comptable', 'Secretary-bursar'), secretary: T('Secrétaire comptable', 'Secretary-bursar'), parent: T('Parent', 'Parent')});
 
 function feeStatus(s) {
   const f = feesOf(s.level), d = today(), disc = +s.discount || 0;
@@ -179,7 +179,7 @@ async function loadProfile(u) {
   stopSubs(); resetData(); S.user = u; S.profile = null; S.blocked = false;
   if (!u) { S.authReady = true; S.dbOk = null; render(); return; }
   try { const d = await S.db.doc('users/' + u.uid).get(); const p = d.exists ? d.data() : null;
-    if (!p || p.active === false) S.blocked = true; else { S.profile = p; S.me = u.uid; }
+    if (!p || p.active === false) S.blocked = true; else { if (p.role === 'accountant') p.role = 'secretary'; S.profile = p; S.me = u.uid; }
   } catch (e) { console.warn(e); S.blocked = true; }
   S.authReady = true; S.dbOk = true;
   if (S.profile) subscribe();
@@ -190,6 +190,7 @@ function subscribe() {
   const done = k => { S.loaded[k] = true; };
   const sub = (q, fn, key) => SUBS.push(q.onSnapshot(s => { fn(s); if (key) done(key); schedule(); }, e => { console.warn(key, e); if (key) done(key); schedule(); }));
   sub(db.doc('config/school'), s => S.config = s.exists ? s.data() : {}, 'config');
+  sub(db.collection('events').where('year', '==', YEAR), q => S.events = docsOf(q));
   if (r === 'parent') {
     const ph = S.profile.phone;
     sub(db.collection('students').where('phoneKey', '==', ph), q => { S.students = docsOf(q); subParentAtt(); }, 'students');
@@ -198,14 +199,22 @@ function subscribe() {
     const merge = () => { S.messages = sortMsg([...parts.a, ...parts.b].filter(m => m.year === YEAR)); if (got.a && got.b) done('messages'); };
     sub(db.collection('messages').where('kind', '==', 'announce'), q => { parts.a = docsOf(q); got.a = true; merge(); });
     sub(db.collection('messages').where('phoneKey', '==', ph), q => { parts.b = docsOf(q); got.b = true; merge(); });
-    ['stats', 'staff', 'users'].forEach(done);
+    ['stats', 'staff', 'users', 'expenses'].forEach(done);
     return;
   }
   sub(db.collection('students'), q => S.students = docsOf(q), 'students');
-  if (isMgr(r) || r === 'accountant') { sub(db.collection('payments').where('year', '==', YEAR), q => S.payments = sortPay(docsOf(q)), 'payments'); } else done('payments');
+  if (canSeeWorks(r)) { SUBS.push(db.collection('works').onSnapshot(q => { S.works = docsOf(q); schedule(); }, e => console.warn(e))); SUBS.push(db.collection('workchecks').onSnapshot(q => { S.workchecks = docsOf(q); schedule(); }, e => console.warn(e))); }
+  if (canSeePay(r)) { SUBS.push(db.doc('payroll/scale').onSnapshot(s => { S.payroll = s.exists ? s.data() : null; schedule(); }, e => console.warn(e))); SUBS.push(db.collection('fundreq').where('year', '==', YEAR).onSnapshot(q => { S.fundreqs = docsOf(q); schedule(); }, e => console.warn(e))); }
+  if (isAdmin(r)) SUBS.push(db.doc('finance/' + YEAR).onSnapshot(s => { S.finance = s.exists ? s.data() : null; schedule(); }, e => console.warn(e)));
+  if (isAdmin(r) || isCashier(r)) { sub(db.collection('payments').where('year', '==', YEAR), q => S.payments = sortPay(docsOf(q)), 'payments'); } else done('payments');
   sub(db.collection('messages').where('year', '==', YEAR), q => S.messages = sortMsg(docsOf(q)), 'messages');
   sub(db.collection('attendance').where('year', '==', YEAR), q => { const o = {}; q.docs.forEach(d => o[d.id] = {id: d.id, ...d.data()}); S.att = o; }, 'att');
   sub(db.collection('staff').where('year', '==', YEAR), q => { const o = {}; q.docs.forEach(d => o[d.id] = {id: d.id, ...d.data()}); S.staff = o; }, 'staff');
+  if (r === 'teacher') SUBS.push(db.collection('grades').where('year', '==', YEAR).where('level', '==', S.profile.level || '').onSnapshot(q => { const o = {}; q.docs.forEach(d => o[d.id] = {id: d.id, ...d.data()}); S.grades = o; schedule(); }, e => console.warn(e)));
+  else if (isMgr(r)) SUBS.push(db.collection('grades').where('year', '==', YEAR).onSnapshot(q => { const o = {}; q.docs.forEach(d => o[d.id] = {id: d.id, ...d.data()}); S.grades = o; schedule(); }, e => console.warn(e)));
+  if (canSeeExpenses(r)) sub(db.collection('expenses').where('year', '==', YEAR), q => S.expenses = sortExp(docsOf(q)), 'expenses'); else done('expenses');
+  if (canSeeExpenses(r)) SUBS.push(db.collection('expreq').where('year', '==', YEAR).onSnapshot(q => { S.expreqs = docsOf(q); schedule(); }, e => console.warn(e)));
+  else if (r === 'supervisor') SUBS.push(db.collection('expreq').where('byUid', '==', S.user.uid).onSnapshot(q => { S.expreqs = docsOf(q).filter(x => x.year === YEAR); schedule(); }, e => console.warn(e)));
   if (r === 'secretary') { sub(db.collection('users').where('role', '==', 'parent'), q => S.users = docsOf(q), 'users'); done('stats'); }
   else if (isMgr(r)) { sub(db.collection('stats'), q => { const o = {}; q.docs.forEach(d => o[d.id] = d.data()); S.stats = o; }, 'stats'); if (isAdmin(r)) sub(db.collection('users'), q => S.users = docsOf(q), 'users'); else done('users'); }
   else { done('stats'); done('users'); }
@@ -236,6 +245,321 @@ async function write(fn, okMsg) {
     console.warn(e); return false;
   }
 }
+async function nextNo(name) {
+  if (!navigator.onLine) return Number(String(Date.now()).slice(-6));
+  const ref = S.db.doc('counters/' + name);
+  return S.db.runTransaction(async tx => { const s = await tx.get(ref); const n = ((s.exists && +s.data().n) || 0) + 1; tx.set(ref, {n}); return n; });
+}
+/* ---------- disbursements (secretary) ---------- */
+const EXP_CATS = [
+  ['refund', 'Remboursement à une famille (inscription, scolarité, trop-perçu)', 'Refund to a family (registration, fees, overpayment)'],
+  ['electricity', 'Facture d’électricité', 'Electricity bill'],
+  ['internet', 'Facture d’internet', 'Internet bill'],
+  ['salaries', 'Salaires du personnel', 'Staff salaries'],
+  ['works', 'Facture de travaux', 'Building works bill'],
+  ['copier', 'Facture de la photocopieuse', 'Photocopier bill'],
+  ['supplies', 'Facture de consommables', 'Consumables bill'],
+  ['event', 'Facture d’un événement organisé par l’école', 'School event bill'],
+  ['cleaning', 'Produits et matériel de nettoyage', 'Cleaning products and materials'],
+  ['repair', 'Réparations', 'Repairs'],
+  ['other', 'Autre (préciser l’objet)', 'Other (specify)']
+];
+const EXP = Object.fromEntries(EXP_CATS.map(c => [c[0], c]));
+const expCat = k => EXP[k] ? T(EXP[k][1], EXP[k][2]) : k;
+const EXP_METHODS = () => ({cash: T('Espèces', 'Cash'), om: 'Orange Money', momo: 'MTN Mobile Money', bank: T('Virement bancaire', 'Bank transfer'), cheque: T('Chèque', 'Cheque')});
+const canSeeExpenses = (r = S.profile?.role) => ['secretary', 'president', 'vicepresident'].includes(r);
+const canWriteExpenses = (r = S.profile?.role) => r === 'secretary';
+const canAskExpense = (r = S.profile?.role) => r === 'secretary' || r === 'supervisor';
+const REQ_CATS = r => EXP_CATS.filter(c => r === 'supervisor' ? !['refund', 'salaries', 'event'].includes(c[0]) : true);
+const myUid = () => S.user?.uid || '';
+const mineXR = x => x.byUid === myUid();
+const sortExp = a => a.sort((x, y) => (y.date || '').localeCompare(x.date || '') || (y.createdAt || '').localeCompare(x.createdAt || ''));
+const voucherLabel = n => `LYC-D-${YEAR.slice(2,4)}${YEAR.slice(7,9)}-${String(n).padStart(4,'0')}`;
+const expLine = e => e.category === 'other' || !e.label ? (e.label || expCat(e.category)) : expCat(e.category) + ' – ' + e.label;
+/* ---------- salary funds requests (appels de fonds) ---------- */
+const canSeePay = (r = S.profile?.role) => ['direction', 'president', 'vicepresident', 'secretary', 'accountant'].includes(r);
+const canEditScale = (r = S.profile?.role) => ['direction', 'president', 'vicepresident'].includes(r);
+const canMakeReq = (r = S.profile?.role) => r === 'direction';
+const REQ_ST = () => ({draft: [T('Brouillon', 'Draft'), 'grey'], submitted: [T('À valider', 'Awaiting approval'), 'amber'], validated: [T('Validé · à payer', 'Approved · to pay'), 'blue'], rejected: [T('Refusé', 'Rejected'), 'red'], paid: [T('Payé', 'Paid'), 'green']});
+const reqChip = q => { const c = REQ_ST()[q.status] || REQ_ST().draft; return `<span class="chip ${c[1]}">${c[0]}</span>`; };
+const monthLabel = m => { try { return cap(new Date(m + '-15T12:00:00').toLocaleDateString(LOC(), {month: 'long', year: 'numeric'})); } catch { return m; } };
+const reqTotal = rows => rows.reduce((t, r) => t + (+r.amount || 0), 0);
+const sortedReqs = () => S.fundreqs.slice().sort((a, b) => (b.month || '').localeCompare(a.month || '') || (b.createdAt || '').localeCompare(a.createdAt || ''));
+const scaleRows = () => (S.payroll?.rows || []);
+function viewFonds() {
+  const reqs = sortedReqs(), rows = scaleRows();
+  return `<div class="section"><div class="section-head"><h2>${T('Appels de fonds', 'Funds requests')}</h2></div>${canMakeReq() ? `<div class="btns"><button class="btn primary sm" data-a="req-new" ${rows.length ? '' : 'disabled'}>${T('Salaires du mois', 'Monthly salaries')}</button><button class="btn primary sm" data-a="evreq-new">${T('Événement ou fête', 'Event or party')}</button></div>` : ''}
+    <span class="small muted">${T('La directrice prépare l’appel de fonds (salaires du mois, ou événement avec son déroulé et ses devis), le président ou le vice-président le valide, puis la secrétaire comptable enregistre les paiements dans les décaissements.', 'The head teacher prepares the request (monthly salaries, or an event with its programme and quotes), the chairman or vice-chairman approves it, then the secretary-bursar records the payments as disbursements.')}</span></div>
+  <div class="section"><h3>${T('Appels de fonds', 'Requests')} ${YEAR}</h3>${reqs.length ? `<div class="panel rows">${reqs.map(q => `<button class="row" data-a="req-open" data-v="${q.id}"><span class="grow"><span class="name">${reqName(q)}</span><br><span class="small muted">${reqSub(q)} · ${esc(q.createdBy || '')}</span></span><span class="num" style="text-align:right"><b>${money(q.total)}</b><br>${reqChip(q)}</span></button>`).join('')}</div>` : `<div class="panel empty">${T('Aucun appel de fonds pour le moment.', 'No requests yet.')}</div>`}</div>
+  <div class="section"><div class="section-head"><h3>${T('Barème des salaires', 'Salary scale')}</h3>${canEditScale() ? `<button class="btn ghost sm" data-a="scale-edit">${T('Modifier', 'Edit')}</button>` : ''}</div>
+    ${rows.length ? `<div class="panel tbl"><table class="tight"><thead><tr><th>${T('Nom', 'Name')}</th><th>${T('Fonction', 'Role')}</th><th>${T('Salaire (F)', 'Salary (F)')}</th></tr></thead><tbody>${rows.map(r => `<tr><td style="white-space:normal">${esc(r.name)}</td><td style="white-space:normal">${esc(r.role || '')}</td><td>${nf(r.amount)}</td></tr>`).join('')}<tr><td><b>Total</b></td><td>${rows.length} ${T('personnes', 'people')}</td><td><b>${nf(reqTotal(rows))}</b></td></tr></tbody></table></div>`
+      : `<div class="panel empty"><b>${T('Barème pas encore saisi', 'Scale not entered yet')}</b>${canEditScale() ? `<button class="btn primary" data-a="scale-edit">${T('Saisir le barème', 'Enter the scale')}</button>` : ''}</div>`}</div>`;
+}
+function scaleText(rows) { return rows.map(r => `${r.name} ; ${r.role || ''} ; ${r.amount}`).join('\n'); }
+function sheetScale() {
+  return {title: () => T('Barème des salaires', 'Salary scale'), body: () => `<form data-form="scale">
+    <label class="f">${T('Une ligne par personne', 'One line per person')}<span class="hint">${T('Nom ; fonction ; salaire mensuel en F', 'Name ; role ; monthly salary in F')}</span><textarea id="sc-list" name="list" rows="14" style="font-family:ui-monospace,monospace;font-size:.85rem">${esc(scaleText(scaleRows()))}</textarea></label>
+    <button class="btn primary">${T('Enregistrer le barème', 'Save the scale')}</button></form>`};
+}
+function parseScale(text) {
+  return String(text || '').split('\n').map(l => l.split(/[;\t]/).map(x => x.trim())).filter(r => r[0]).map(r => ({name: r[0], role: r[1] || '', amount: num(r[2])}));
+}
+function sheetReq(id) {
+  const q0 = S.fundreqs.find(x => x.id === id); if (q0 && isEv(q0)) return sheetEvReq(id);
+  return sheetSalReq(id);
+}
+S.qphotos = {};
+function quotePhoto(pid) {
+  if (!pid) return null; if (pid in S.qphotos) return S.qphotos[pid];
+  S.qphotos[pid] = null; S.db?.doc('quotephotos/' + pid).get().then(d => { S.qphotos[pid] = d.exists ? d.data().data || '' : ''; if (S.sheet) refreshSheet(); }).catch(() => { S.qphotos[pid] = ''; });
+  return null;
+}
+const progLines = t => String(t || '').split('\n').map(l => l.split(/[;\t]/).map(x => x.trim())).filter(r => r.some(Boolean)).map(r => ({time: r[0] || '', activity: r[1] || '', who: r[2] || ''}));
+const progText = p => (p || []).map(x => [x.time, x.activity, x.who].join(' ; ')).join('\n');
+const evPaid = q => +q.paidAmount || 0;
+function sheetEvReqNew() {
+  const evs = sortedEvents().filter(e => evEnd(e) >= today());
+  return {title: () => T('Appel de fonds : événement', 'Funds request: event'), body: () => `<form data-form="evreq-new">
+    ${evs.length ? `<label class="f">${T('Événement du calendrier', 'Calendar event')}<span class="hint">${T('facultatif, remplit l’intitulé et la date', 'optional, fills in title and date')}</span><select id="er-cal" data-change="er-cal"><option value="">—</option>${evs.map(e => `<option value="${e.id}">${frDate(e.date)} · ${esc(evTitle(e))}</option>`).join('')}</select></label>` : ''}
+    <label class="f">${T('Intitulé', 'Title')}<input id="er-title" name="title" required placeholder="${T('ex. Fête de Noël 2026', 'e.g. Christmas party 2026')}"></label>
+    <div class="grid2"><label class="f">${T('Date', 'Date')}<input id="er-date" name="date" type="date" required></label><label class="f">${T('Lieu', 'Place')}<input id="er-place" name="place" placeholder="${T('ex. cour de l’école', 'e.g. school yard')}"></label></div>
+    <label class="f">${T('Participants attendus', 'Expected participants')}<input id="er-people" name="people" placeholder="${T('ex. 276 élèves, parents, personnel', 'e.g. 276 pupils, parents, staff')}"></label>
+    <label class="f">${T('Objectif et description', 'Purpose and description')}<textarea id="er-desc" name="description" rows="3"></textarea></label>
+    <button class="btn primary">${T('Créer l’appel de fonds', 'Create the request')}</button></form>`};
+}
+function sheetEvReq(id) {
+  return {title: () => T('Appel de fonds : événement', 'Funds request: event'), live: true, body: () => { const q = S.fundreqs.find(x => x.id === id); if (!q) return `<div class="empty">${T('Appel introuvable.', 'Request not found.')}</div>`;
+    const editable = canMakeReq() && ['draft', 'rejected'].includes(q.status), role = S.profile.role, quotes = q.quotes || [], paid = evPaid(q);
+    const exps = S.expenses.filter(e => e.fundReqId === q.id && !e.cancelled);
+    return `<div class="section"><div class="section-head"><h3>${esc(q.title)}</h3>${reqChip(q)}</div>
+      <span class="small">${q.eventDate ? cap(longDay(q.eventDate)) : ''}${q.place ? ' · ' + esc(q.place) : ''}${q.people ? ' · ' + esc(q.people) : ''}</span>
+      <span class="small muted">${T('Préparé par', 'Prepared by')} ${esc(q.createdBy || '')}${q.submittedAt ? ' · ' + T('soumis le ', 'submitted ') + frDate(q.submittedAt) : ''}${q.validatedBy ? ' · ' + (q.status === 'rejected' ? T('refusé par ', 'rejected by ') : T('validé par ', 'approved by ')) + esc(q.validatedBy) + ' ' + T('le ', 'on ') + frDate(q.validatedAt) : ''}</span>
+      ${q.description ? `<div class="panel" style="padding:12px 14px;white-space:pre-wrap">${esc(q.description)}</div>` : ''}</div>
+    ${q.status === 'rejected' && q.rejectReason ? `<div class="banner red small">${T('Motif du refus', 'Reason')} : ${esc(q.rejectReason)}</div>` : ''}
+    <div class="section"><h3>${T('Déroulé', 'Programme')}</h3>
+      ${editable ? `<form data-form="ev-prog" data-id="${q.id}"><label class="f"><span class="hint">${T('Une ligne par étape : heure ; activité ; responsable', 'One line per step: time ; activity ; person in charge')}</span><textarea id="ep-text" name="prog" rows="6" placeholder="08:00 ; Accueil des parents ; Mme Ndi&#10;09:00 ; Défilé des élèves ; Titulaires">${esc(progText(q.programme))}</textarea></label><button class="btn sm">${T('Enregistrer le déroulé', 'Save programme')}</button></form>` : ''}
+      ${(q.programme || []).length ? `<div class="panel tbl"><table class="tight"><thead><tr><th style="text-align:left">${T('Heure', 'Time')}</th><th style="text-align:left">${T('Activité', 'Activity')}</th><th style="text-align:left">${T('Responsable', 'In charge')}</th></tr></thead><tbody>${q.programme.map(p => `<tr><td>${esc(p.time)}</td><td style="white-space:normal">${esc(p.activity)}</td><td style="white-space:normal">${esc(p.who)}</td></tr>`).join('')}</tbody></table></div>` : (editable ? '' : `<div class="panel empty">${T('Déroulé non renseigné.', 'No programme given.')}</div>`)}</div>
+    <div class="section"><div class="section-head"><h3>${T('Devis', 'Quotes')} (${quotes.length})</h3><b class="num">${money(q.total || 0)}</b></div>
+      ${quotes.length ? `<div class="panel rows">${quotes.map((x, i) => { const ph = quotePhoto(x.photoId); return `<div class="row" style="flex-wrap:wrap;align-items:flex-start"><span class="grow"><span class="name">${esc(x.item)}</span><br><span class="small muted">${esc(x.supplier)}${x.ref ? ' · ' + T('devis n° ', 'quote no. ') + esc(x.ref) : ''}</span></span><b class="num">${money(x.amount)}</b>${editable ? `<button class="btn ghost sm" data-a="quote-del" data-v="${q.id}" data-s="${i}">${T('Retirer', 'Remove')}</button>` : ''}${ph ? `<img src="${ph}" alt="${T('Devis', 'Quote')}" style="flex-basis:100%;max-width:100%;max-height:220px;object-fit:contain;background:#fff;border-radius:8px;margin-top:6px">` : ''}</div>`; }).join('')}</div>` : `<div class="panel empty">${T('Aucun devis ajouté.', 'No quotes added.')}</div>`}
+      ${editable ? `<form data-form="quote-add" data-id="${q.id}" class="panel" style="padding:12px 14px"><b>${T('Ajouter un devis', 'Add a quote')}</b>
+        <div class="grid2"><label class="f">${T('Fournisseur', 'Supplier')}<input id="qa-sup" name="supplier" required></label><label class="f">${T('Objet', 'For')}<input id="qa-item" name="item" required placeholder="${T('ex. sonorisation, repas, décoration', 'e.g. sound system, food, decoration')}"></label></div>
+        <div class="grid2"><label class="f">${T('Montant (F)', 'Amount (F)')}<input id="qa-amt" name="amount" inputmode="numeric" required></label><label class="f">${T('N° du devis', 'Quote no.')}<span class="hint">${T('facultatif', 'optional')}</span><input id="qa-ref" name="ref"></label></div>
+        <label class="f">${T('Photo du devis', 'Photo of the quote')}<span class="hint">${T('facultatif', 'optional')}</span><input id="qa-photo" type="file" accept="image/*" capture="environment"></label>
+        <button class="btn sm">${T('Ajouter ce devis', 'Add this quote')}</button></form>` : ''}</div>
+    ${editable ? `<div class="btns"><button class="btn primary" data-a="req-submit-ev" data-v="${q.id}" ${quotes.length ? '' : 'disabled'}>${T(`Soumettre au président (${money(q.total || 0)})`, `Submit to the chairman (${money(q.total || 0)})`)}</button>${q.status === 'draft' ? `<button class="btn ghost" data-a="req-del" data-v="${q.id}">${T('Supprimer le brouillon', 'Delete draft')}</button>` : ''}</div>` : ''}
+    ${isAdmin(role) && q.status === 'submitted' ? `<div class="btns"><button class="btn primary" data-a="req-validate" data-v="${q.id}">${T(`Valider ${money(q.total)}`, `Approve ${money(q.total)}`)}</button><button class="btn" data-a="req-reject-ask" data-v="${q.id}">${T('Refuser', 'Reject')}</button></div>
+      ${S.reqRejecting === q.id ? `<form data-form="req-reject" data-id="${q.id}"><label class="f">${T('Motif du refus', 'Reason for rejecting')}<input id="rj-reason" name="reason" required autofocus></label><button class="btn red">${T('Confirmer le refus', 'Confirm rejection')}</button></form>` : ''}` : ''}
+    ${['validated', 'paid'].includes(q.status) ? `<div class="panel" style="padding:12px 14px;display:flex;flex-direction:column;gap:6px"><div class="section-head"><span>${T('Payé', 'Paid')} <b class="num">${money(paid)}</b></span><span class="small muted num">${T('sur', 'of')} ${money(q.total)}</span></div><div class="bar"><i style="width:${Math.min(100, pct(paid, q.total))}%"></i></div>
+      ${exps.length ? exps.map(e => `<button class="row" data-a="exp-open" data-v="${e.id}" style="padding:6px 0"><span class="grow small">${frDate(e.date)} · ${esc(e.beneficiary)}</span><b class="num small">${money(e.amount)}</b></button>`).join('') : ''}</div>` : ''}
+    ${isCashier(role) && q.status === 'validated' ? `<button class="btn red" data-a="evreq-pay" data-v="${q.id}">${T('Enregistrer un paiement dans les décaissements', 'Record a payment as a disbursement')}</button>` : ''}
+    <button class="btn sm" data-a="req-csv" data-v="${q.id}">${T('Exporter (CSV)', 'Export (CSV)')}</button>`; }};
+}
+function eventExpForm() {
+  const list = toPay().filter(isEv), rid = list.some(q => q.id === S.payReq) ? S.payReq : list[0]?.id, q = list.find(x => x.id === rid), rest = q ? Math.max(0, q.total - evPaid(q)) : 0;
+  return `<form data-form="exp-ev">
+    <label class="f">${T('Nature du décaissement', 'Type of disbursement')}<select id="ex-cat" name="category" data-change="exp-cat">${EXP_CATS.map(c => `<option value="${c[0]}" ${c[0] === 'event' ? 'selected' : ''}>${T(c[1], c[2])}</option>`).join('')}</select></label>
+    ${q ? `<label class="f">${T('Appel de fonds validé', 'Approved funds request')}<select id="ex-req" name="req" data-change="ev-req">${list.map(x => `<option value="${x.id}" ${x.id === rid ? 'selected' : ''}>${esc(x.title)} · ${T('reste', 'left')} ${money(Math.max(0, x.total - evPaid(x)))}</option>`).join('')}</select></label>
+      <label class="f">${T('Devis payé', 'Quote paid')}<select id="ex-quote" name="quote" data-change="ev-quote">${(q.quotes || []).map((x, i) => `<option value="${i}">${esc(x.supplier)} · ${esc(x.item)} · ${money(x.amount)}</option>`).join('')}</select></label>
+      <div class="grid2"><label class="f">${T('Montant (F)', 'Amount (F)')}<span class="hint">${T('reste à payer', 'left to pay')} : ${money(rest)}</span><input id="ex-amount" name="amount" inputmode="numeric" required value="${q.quotes?.[0]?.amount && q.quotes[0].amount <= rest ? q.quotes[0].amount : rest}"></label><label class="f">${T('Date', 'Date')}<input id="ex-date" name="date" type="date" value="${today()}" max="${today()}"></label></div>
+      <div class="grid2"><label class="f">${T('Mode de paiement', 'Paid by')}<select id="ex-method" name="method">${Object.entries(EXP_METHODS()).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label><label class="f">${T('Référence', 'Reference')}<input id="ex-ref" name="ref"></label></div>
+      <button class="btn red" ${S.canWrite ? '' : 'disabled'}>${T('Enregistrer le paiement', 'Record the payment')}</button>`
+    : `<div class="banner warn small">${T('Aucun appel de fonds d’événement validé. Les dépenses d’un événement ne peuvent être décaissées qu’après validation par le président ou le vice-président.', 'No approved event request. Event expenses can only be paid out after approval by the chairman or vice-chairman.')}</div>`}
+  </form>`;
+}
+function sheetSalReq(id) {
+  return {title: () => T('Appel de fonds', 'Funds request'), live: true, body: () => { const q = S.fundreqs.find(x => x.id === id); if (!q) return `<div class="empty">${T('Appel introuvable.', 'Request not found.')}</div>`;
+    const editable = canMakeReq() && ['draft', 'rejected'].includes(q.status), role = S.profile.role;
+    const exp = q.expenseId ? S.expenses.find(e => e.id === q.expenseId) : null;
+    return `<div class="section"><div class="section-head"><h3>${T('Salaires', 'Salaries')} · ${monthLabel(q.month)}</h3>${reqChip(q)}</div>
+      <span class="small muted">${T('Préparé par', 'Prepared by')} ${esc(q.createdBy || '')}${q.submittedAt ? ' · ' + T('soumis le ', 'submitted ') + frDate(q.submittedAt) : ''}${q.validatedBy ? ' · ' + (q.status === 'rejected' ? T('refusé par ', 'rejected by ') : T('validé par ', 'approved by ')) + esc(q.validatedBy) + ' ' + T('le ', 'on ') + frDate(q.validatedAt) : ''}${q.paidAt ? ' · ' + T('payé le ', 'paid ') + frDate(q.paidAt) : ''}</span></div>
+    ${q.status === 'rejected' && q.rejectReason ? `<div class="banner red small">${T('Motif du refus', 'Reason')} : ${esc(q.rejectReason)}</div>` : ''}
+    <form data-form="req-save" data-id="${q.id}"><div class="panel tbl"><table class="tight"><thead><tr><th>N°</th><th>${T('Nom', 'Name')}</th><th>${T('Fonction', 'Role')}</th><th>${T('Montant (F)', 'Amount (F)')}</th></tr></thead><tbody>
+      ${q.rows.map((r, i) => `<tr><td>${i + 1}</td><td style="white-space:normal">${esc(r.name)}${r.note ? `<br><span class="small muted">${esc(r.note)}</span>` : ''}</td><td style="white-space:normal">${esc(r.role || '')}</td><td>${editable ? `<input id="rq-${i}" name="a-${i}" inputmode="numeric" value="${r.amount}" style="min-width:84px;text-align:right">` : nf(r.amount)}</td></tr>`).join('')}
+      <tr><td></td><td><b>Total</b></td><td>${q.rows.length} ${T('pers.', 'people')}</td><td><b>${nf(q.total)}</b></td></tr></tbody></table></div>
+      ${editable ? `<label class="f">${T('Remarque pour le président', 'Note for the chairman')}<span class="hint">${T('facultatif, ex. retenue pour absence', 'optional, e.g. deduction for absence')}</span><input id="rq-note" name="note" value="${esc(q.note || '')}"></label><div class="btns"><button class="btn">${T('Enregistrer', 'Save')}</button><button class="btn primary" type="button" data-a="req-submit" data-v="${q.id}">${T('Soumettre au président', 'Submit to the chairman')}</button>${q.status === 'draft' ? `<button class="btn ghost" type="button" data-a="req-del" data-v="${q.id}">${T('Supprimer le brouillon', 'Delete draft')}</button>` : ''}</div>` : (q.note ? `<div class="banner info small">${T('Remarque', 'Note')} : ${esc(q.note)}</div>` : '')}
+    </form>
+    ${isAdmin(role) && q.status === 'submitted' ? `<div class="btns"><button class="btn primary" data-a="req-validate" data-v="${q.id}">${T(`Valider ${money(q.total)}`, `Approve ${money(q.total)}`)}</button><button class="btn" data-a="req-reject-ask" data-v="${q.id}">${T('Refuser', 'Reject')}</button></div>
+      ${S.reqRejecting === q.id ? `<form data-form="req-reject" data-id="${q.id}"><label class="f">${T('Motif du refus', 'Reason for rejecting')}<input id="rj-reason" name="reason" required autofocus></label><button class="btn red">${T('Confirmer le refus', 'Confirm rejection')}</button></form>` : ''}` : ''}
+    ${isCashier(role) && q.status === 'validated' ? `<button class="btn red" data-a="req-pay" data-v="${q.id}">${T('Enregistrer le paiement dans les décaissements', 'Record the payment as a disbursement')}</button>` : ''}
+    ${exp ? `<button class="btn" data-a="exp-open" data-v="${exp.id}">${T('Voir le bon de décaissement', 'View the voucher')} N° ${esc(exp.voucher)}</button>` : ''}
+    <button class="btn sm" data-a="req-csv" data-v="${q.id}">${T('Exporter (CSV)', 'Export (CSV)')}</button>`; }};
+}
+function sheetReqNew() {
+  const used = new Set(S.fundreqs.map(q => q.month)); let m = today().slice(0, 7);
+  return {title: () => T('Nouvel appel de fonds', 'New funds request'), body: () => `<form data-form="req-new">
+    <label class="f">${T('Mois des salaires', 'Salary month')}<input id="rn-month" name="month" type="month" required value="${m}"></label>
+    ${used.size ? `<span class="small muted">${T('Mois déjà préparés', 'Months already prepared')} : ${[...used].sort().map(monthLabel).join(', ')}</span>` : ''}
+    <span class="small muted">${T(`L’appel reprend le barème : ${scaleRows().length} personnes, ${money(reqTotal(scaleRows()))}. Vous pourrez ajuster les montants avant de le soumettre.`, `The request copies the scale: ${scaleRows().length} people, ${money(reqTotal(scaleRows()))}. You can adjust amounts before submitting.`)}</span>
+    <button class="btn primary">${T('Préparer l’appel de fonds', 'Prepare the request')}</button></form>`};
+}
+const pendingValidation = () => S.fundreqs.filter(q => q.status === 'submitted');
+const toPay = () => S.fundreqs.filter(q => q.status === 'validated');
+const isEv = q => q.kind === 'event';
+const reqName = q => isEv(q) ? esc(q.title || T('Événement', 'Event')) : `${T('Salaires', 'Salaries')} · ${monthLabel(q.month)}`;
+const reqSub = q => isEv(q) ? `${T('Événement', 'Event')}${q.eventDate ? ' · ' + frDate(q.eventDate) : ''} · ${(q.quotes || []).length} ${T('devis', 'quotes')}` : `${(q.rows || []).length} ${T('personnes', 'people')}`;
+const XR_ST = () => ({submitted: [T('À valider', 'Awaiting approval'), 'amber'], validated: [T('Validé · à payer', 'Approved · to pay'), 'blue'], rejected: [T('Refusé', 'Rejected'), 'red'], paid: [T('Payé', 'Paid'), 'green']});
+const xrChip = r => { const c = XR_ST()[r.status] || XR_ST().submitted; return `<span class="chip ${c[1]}">${c[0]}</span>`; };
+const xrRow = r => `<button class="row" data-a="xr-open" data-v="${r.id}" style="align-items:flex-start"><span class="grow"><span class="name">${esc(expLine(r))}</span><br><span class="small muted">${esc(r.beneficiary || '')} · ${T('demandé le ', 'requested ')}${frDate(r.createdAt)}</span></span><span class="num" style="text-align:right"><b>${money(r.amount)}</b><br>${xrChip(r)}</span></button>`;
+const openXR = () => S.expreqs.filter(r => r.status !== 'paid').sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+function expReqAlertCard() {
+  const role = S.profile?.role; let list = [], title = '';
+  if (isAdmin(role)) { list = S.expreqs.filter(r => r.status === 'submitted'); title = T('Demandes de décaissement à valider', 'Disbursement requests to approve'); }
+  else if (canWriteExpenses(role)) { list = S.expreqs.filter(r => ['validated', 'rejected'].includes(r.status)); title = T('Demandes de décaissement validées ou refusées', 'Disbursement requests approved or rejected'); }
+  if (!list.length) return '';
+  return `<div class="section"><h3>${title}</h3><div class="panel rows">${list.map(xrRow).join('')}</div></div>`;
+}
+const itemLines = t => String(t || '').split('\n').map(l => { const m = l.split(/[;\t]/); const amt = num(m[m.length - 1]); return m.length > 1 ? {item: m.slice(0, -1).join(' ').trim(), amount: amt} : {item: l.trim(), amount: 0}; }).filter(x => x.item);
+function xrPhoto(pid) {
+  const k = 'x:' + pid; if (!pid) return null; if (k in S.qphotos) return S.qphotos[k];
+  S.qphotos[k] = null; S.db?.doc('xrphotos/' + pid).get().then(d => { S.qphotos[k] = d.exists ? d.data().data || '' : ''; if (S.sheet) refreshSheet(); }).catch(() => { S.qphotos[k] = ''; });
+  return null;
+}
+function readDocPhoto(file) {
+  return new Promise((res, rej) => { const fr = new FileReader(); fr.onerror = rej; fr.onload = () => { const im = new Image(); im.onerror = rej; im.onload = () => {
+    const k = Math.min(1, 1100 / Math.max(im.width, im.height)), c = document.createElement('canvas'); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+    c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); let q = 0.72, out = c.toDataURL('image/jpeg', q); while (out.length > 230000 && q > 0.3) { q -= 0.1; out = c.toDataURL('image/jpeg', q); } res(out); }; im.src = fr.result; }; fr.readAsDataURL(file); });
+}
+function viewDepenses() {
+  const mine = S.expreqs.filter(mineXR).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  return `<div class="section"><div class="section-head"><h2>${T('Demandes de dépense', 'Expense requests')}</h2><button class="btn red sm" data-a="exp-add">${T('Nouvelle demande', 'New request')}</button></div>
+    <p class="small muted" style="margin:0">${T('Pour nettoyer, réparer ou toute autre dépense de fonctionnement : joignez une photo du justificatif ou du devis et expliquez le besoin. Le président ou le vice-président valide, puis la secrétaire comptable paie.', 'To clean, repair or any other running cost: attach a photo of the receipt or quote and explain the need. The chairman or vice-chairman approves, then the secretary-bursar pays.')}</p></div>
+    ${mine.length ? `<div class="panel rows">${mine.map(xrRow).join('')}</div>` : `<div class="panel empty"><b>${T('Aucune demande', 'No requests')}</b><button class="btn red" data-a="exp-add">${T('Faire une demande de dépense', 'Make an expense request')}</button></div>`}`;
+}
+function sheetXR(id) {
+  return {title: () => T('Demande de dépense', 'Expense request'), live: true, body: () => { const r = S.expreqs.find(x => x.id === id); if (!r) return `<div class="empty">${T('Demande introuvable.', 'Request not found.')}</div>`;
+    const role = S.profile.role, exp = r.expenseId ? S.expenses.find(e => e.id === r.expenseId) : null;
+    return `<div class="section"><div class="section-head"><h3>${esc(expLine(r))}</h3>${xrChip(r)}</div>
+      <div class="panel" style="padding:12px 14px;display:flex;flex-direction:column;gap:6px">
+        <div class="section-head"><span>${T('Montant', 'Amount')}</span><b class="num">${money(r.amount)}</b></div>
+        ${r.beneficiary ? `<div class="section-head"><span>${T('Bénéficiaire', 'Paid to')}</span><b>${esc(r.beneficiary)}</b></div>` : ''}
+        ${r.studentName ? `<div class="section-head"><span>${T('Élève', 'Pupil')}</span><b>${esc(r.studentName)} · ${esc(LV[r.level]?.name || '')}</b></div>` : ''}
+        ${r.invoiceRef ? `<div class="section-head"><span>${T('N° de facture', 'Invoice no.')}</span><b>${esc(r.invoiceRef)}</b></div>` : ''}
+        ${r.note ? `<span class="small" style="white-space:pre-wrap">${esc(r.note)}</span>` : ''}
+        <span class="small muted">${T('Demandé par', 'Requested by')} ${esc(r.by || '')}${r.byRole ? ' (' + esc(ROLE_NAME()[r.byRole] || '') + ')' : ''} ${T('le', 'on')} ${frDate(r.createdAt)}${r.validatedBy ? ' · ' + (r.status === 'rejected' ? T('refusé par ', 'rejected by ') : T('validé par ', 'approved by ')) + esc(r.validatedBy) + ' ' + T('le ', 'on ') + frDate(r.validatedAt) : ''}</span></div></div>
+    ${(r.items || []).length ? `<div class="section"><h3>${T('Détail', 'Details')} (${r.items.length})</h3><div class="panel tbl"><table class="tight"><tbody>${r.items.map((x, i) => `<tr><td>${i + 1}</td><td style="white-space:normal;text-align:left">${esc(x.item)}</td><td class="num">${x.amount ? money(x.amount) : ''}</td></tr>`).join('')}<tr><td></td><td style="text-align:left"><b>Total</b></td><td class="num"><b>${money(r.items.reduce((t, x) => t + (+x.amount || 0), 0))}</b></td></tr></tbody></table></div></div>` : ''}
+    ${(r.photoIds || []).length ? `<div class="section"><h3>${T('Justificatifs', 'Supporting documents')}</h3>${r.photoIds.map(pid => { const ph = xrPhoto(pid); return ph ? `<img src="${ph}" alt="${T('Justificatif', 'Supporting document')}" style="width:100%;border-radius:10px;background:#fff">` : `<div class="panel empty small">${T('Chargement de la photo…', 'Loading photo…')}</div>`; }).join('')}</div>` : ''}
+    ${r.status === 'rejected' && r.rejectReason ? `<div class="banner red small">${T('Motif du refus', 'Reason')} : ${esc(r.rejectReason)}</div>` : ''}
+    ${isAdmin(role) && r.status === 'submitted' ? `<div class="btns"><button class="btn primary" data-a="xr-validate" data-v="${r.id}">${T(`Valider ${money(r.amount)}`, `Approve ${money(r.amount)}`)}</button><button class="btn" data-a="xr-reject-ask" data-v="${r.id}">${T('Refuser', 'Reject')}</button></div>
+      ${S.xrRejecting === r.id ? `<form data-form="xr-reject" data-id="${r.id}"><label class="f">${T('Motif du refus', 'Reason for rejecting')}<input id="xr-reason" name="reason" required autofocus></label><button class="btn red">${T('Confirmer le refus', 'Confirm rejection')}</button></form>` : ''}` : ''}
+    ${canWriteExpenses(role) && r.status === 'validated' ? `<form data-form="xr-pay" data-id="${r.id}" class="panel" style="padding:12px 14px"><b>${T('Payer et émettre le bon', 'Pay and issue the voucher')}</b>
+      <div class="grid2"><label class="f">${T('Date', 'Date')}<input id="xp-date" name="date" type="date" value="${today()}" max="${today()}"></label><label class="f">${T('Mode de paiement', 'Paid by')}<select id="xp-method" name="method">${Object.entries(EXP_METHODS()).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label></div>
+      <label class="f">${T('Payé à', 'Paid to')}<input id="xp-ben" name="beneficiary" required value="${esc(r.beneficiary || '')}" placeholder="${T('Fournisseur ou personne qui fait l’achat', 'Supplier or person making the purchase')}"></label>
+      <label class="f">${T('Référence', 'Reference')}<span class="hint">${T('n° de facture ou de transaction', 'invoice or transaction no.')}</span><input id="xp-ref" name="ref" value="${esc(r.invoiceRef || '')}"></label>
+      ${r.category === 'refund' && r.studentId ? `<label class="f" style="flex-direction:row;align-items:center;gap:10px"><input type="checkbox" name="markLeft" ${r.markLeft ? 'checked' : ''} style="width:22px;min-height:22px">${T('Marquer l’élève comme ayant quitté l’école', 'Mark the pupil as having left the school')}</label>` : ''}
+      <button class="btn red" ${S.canWrite ? '' : 'disabled'}>${T(`Enregistrer le paiement de ${money(r.amount)}`, `Record payment of ${money(r.amount)}`)}</button></form>` : ''}
+    ${exp ? `<button class="btn" data-a="exp-open" data-v="${exp.id}">${T('Voir le bon N° ', 'See voucher no. ')}${esc(exp.voucher)}</button>` : ''}
+    ${(canWriteExpenses(role) || (role === 'supervisor' && mineXR(r))) && ['submitted', 'rejected'].includes(r.status) ? `<button class="btn ghost" data-a="xr-del" data-v="${r.id}">${T('Supprimer la demande', 'Delete the request')}</button>` : ''}`; }};
+}
+function fundsAlertCard() {
+  const role = S.profile?.role; let list = [], title = '';
+  if (isAdmin(role)) { list = pendingValidation(); title = T('Appels de fonds à valider', 'Funds requests to approve'); }
+  else if (isCashier(role)) { list = toPay(); title = T('Appels de fonds validés à payer', 'Approved requests to pay'); }
+  else if (canMakeReq(role)) { list = S.fundreqs.filter(q => q.status === 'rejected'); title = T('Appels de fonds refusés à revoir', 'Rejected requests to review'); }
+  if (!list.length) return '';
+  return `<div class="section"><h3>${title}</h3><div class="panel rows">${list.map(q => `<button class="row" data-a="req-open" data-v="${q.id}"><span class="grow"><span class="name">${reqName(q)}</span><br><span class="small muted">${reqSub(q)}</span></span><span class="num" style="text-align:right"><b>${money(q.total)}</b><br>${reqChip(q)}</span></button>`).join('')}</div></div>`;
+}
+function salaryExpForm() {
+  const list = toPay().filter(q => !isEv(q));
+  return `<form data-form="exp-sal">
+    <label class="f">${T('Nature du décaissement', 'Type of disbursement')}<select id="ex-cat" name="category" data-change="exp-cat">${EXP_CATS.map(c => `<option value="${c[0]}" ${c[0] === 'salaries' ? 'selected' : ''}>${T(c[1], c[2])}</option>`).join('')}</select></label>
+    ${list.length ? `<label class="f">${T('Appel de fonds validé', 'Approved funds request')}<select id="ex-req" name="req">${list.map(q => `<option value="${q.id}">${T('Salaires', 'Salaries')} ${monthLabel(q.month)} · ${money(q.total)}</option>`).join('')}</select></label>
+      <div class="grid2"><label class="f">${T('Date', 'Date')}<input id="ex-date" name="date" type="date" value="${today()}" max="${today()}"></label><label class="f">${T('Mode de paiement', 'Paid by')}<select id="ex-method" name="method">${Object.entries(EXP_METHODS()).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label></div>
+      <label class="f">${T('Référence', 'Reference')}<span class="hint">${T('facultatif', 'optional')}</span><input id="ex-ref" name="ref"></label>
+      <button class="btn red" ${S.canWrite ? '' : 'disabled'}>${T('Enregistrer le paiement des salaires', 'Record the salary payment')}</button>`
+    : `<div class="banner warn small">${T('Aucun appel de fonds validé. Les salaires ne peuvent être décaissés qu’après validation par le président ou le vice-président.', 'No approved funds request. Salaries can only be paid out after approval by the chairman or vice-chairman.')}</div>`}
+  </form>`;
+}
+async function recordSalaryPayment(reqId, date, method, ref) {
+  const q = S.fundreqs.find(x => x.id === reqId); if (!q || q.status !== 'validated') { toast(T('Cet appel de fonds n’est pas validé.', 'This request is not approved.')); return null; }
+  let eid = null;
+  const ok = await write(async db => { const n = await nextNo('expenses'); const ref2 = db.collection('expenses').doc(); eid = ref2.id;
+    await ref2.set({year: YEAR, voucher: voucherLabel(n), voucherNo: n, category: 'salaries', label: T(/^[aeiouy]/i.test(monthLabel(q.month)) ? 'Salaires d’' : 'Salaires de ', 'Salaries for ') + (EN() ? monthLabel(q.month) : monthLabel(q.month).toLowerCase()), beneficiary: T(`Personnel (${q.rows.length} personnes)`, `Staff (${q.rows.length} people)`), amount: q.total, date: date || today(), method: method || 'cash', ref: ref || '', note: T('Appel de fonds validé par ', 'Funds request approved by ') + (q.validatedBy || ''), fundReqId: q.id, studentId: null, studentName: '', level: null, by: S.profile.name || '', createdAt: nowISO(), cancelled: false});
+    await db.doc('fundreq/' + q.id).update({status: 'paid', expenseId: eid, paidAt: date || today(), paidBy: S.profile.name || ''}); }, T('Paiement des salaires enregistré', 'Salary payment recorded'));
+  return ok ? eid : null;
+}
+function viewDecaisse() {
+  const month = S.expMonth || today().slice(0, 7), all = S.expenses.filter(e => !e.cancelled), list = S.expenses.filter(e => (e.date || '').startsWith(month));
+  const sum = a => a.filter(e => !e.cancelled).reduce((t, e) => t + (+e.amount || 0), 0);
+  const byCat = EXP_CATS.map(c => [c, sum(list.filter(e => e.category === c[0]))]).filter(x => x[1] > 0);
+  let monthName = month; try { monthName = cap(new Date(month + '-15T12:00:00').toLocaleDateString(LOC(), {month: 'long', year: 'numeric'})); } catch {}
+  const paidIn = isAdmin() ? S.payments.filter(p => !p.cancelled).reduce((t, p) => t + (+p.amount || 0), 0) : null;
+  return `
+  <div class="section"><div class="section-head"><h2>${T('Décaissements', 'Disbursements')}</h2>${canWriteExpenses() ? `<button class="btn red sm" data-a="exp-add">${T('Nouvelle demande', 'New request')}</button>` : `<span class="chip grey">${T('Lecture seule', 'Read only')}</span>`}</div>
+    <p class="small muted" style="margin:0">${T('Toute dépense doit être validée par le président ou le vice-président avant d’être payée. La secrétaire comptable soumet la demande, puis enregistre le paiement une fois validée ; chaque décaissement reçoit un bon numéroté.', 'Every expense must be approved by the chairman or vice-chairman before it is paid. The secretary-bursar submits the request, then records the payment once approved; each disbursement gets a numbered voucher.')}</p>
+    <div class="kpis">
+      <div class="kpi"><span class="v">${money(sum(list))}</span><span class="l">${T('décaissés en', 'paid out in')} ${monthName}</span></div>
+      <div class="kpi"><span class="v">${money(sum(all))}</span><span class="l">${T('décaissés sur l’année', 'paid out this year')} ${YEAR}</span></div>
+      ${paidIn != null ? `<div class="kpi"><span class="v">${money(paidIn)}</span><span class="l">${T('encaissés sur l’année', 'collected this year')}</span></div><div class="kpi"><span class="v" style="color:${paidIn - sum(all) < 0 ? 'var(--stamp)' : 'inherit'}">${money(paidIn - sum(all))}</span><span class="l">${T('solde : encaissé moins décaissé', 'balance: collected minus paid out')}</span></div>` : ''}
+    </div>
+    <label class="f">${T('Mois', 'Month')}<input type="month" id="exp-month" value="${month}" max="${today().slice(0, 7)}" data-change="exp-month"></label>
+  </div>
+  ${fundsAlertCard()}
+  ${openXR().length ? `<div class="section"><h3>${T('Demandes de décaissement en cours', 'Open disbursement requests')}</h3><div class="panel rows">${openXR().map(xrRow).join('')}</div></div>` : ''}
+  ${byCat.length ? `<div class="section"><h3>${T('Par nature', 'By type')} · ${monthName}</h3><div class="panel tbl"><table><tbody>${byCat.map(([c, v]) => `<tr><td style="white-space:normal">${c[0] === 'other' ? T('Autres', 'Other') : T(c[1], c[2])}</td><td><b>${money(v)}</b></td></tr>`).join('')}<tr><td><b>Total</b></td><td><b>${money(sum(list))}</b></td></tr></tbody></table></div></div>` : ''}
+  <div class="section"><h3>${T('Bons de décaissement', 'Disbursement vouchers')} · ${monthName}</h3>
+  ${list.length ? `<div class="panel rows">${list.map(e => `<button class="row" data-a="exp-open" data-v="${e.id}" style="align-items:flex-start"><span class="grow"><span class="name">${esc(expLine(e))}</span><br><span class="small muted">${frDate(e.date)} · ${esc(e.beneficiary || '')} · N° ${esc(e.voucher || '')}</span></span><span class="num" style="text-align:right">${e.cancelled ? `<span class="chip red">${T('Annulé', 'Cancelled')}</span>` : `<b>${money(e.amount)}</b>`}<br><span class="small muted">${EXP_METHODS()[e.method] || ''}</span></span></button>`).join('')}</div>`
+    : `<div class="panel empty"><b>${T('Aucun décaissement ce mois-ci', 'No disbursements this month')}</b>${canWriteExpenses() ? `<button class="btn red" data-a="exp-add">${T('Nouvelle demande de décaissement', 'New disbursement request')}</button>` : ''}</div>`}</div>
+  <button class="btn sm" data-a="exp-csv">${T('Exporter l’année (CSV)', 'Export the year (CSV)')}</button>`;
+}
+function sheetExpAdd() {
+  return {title: () => T('Nouvelle demande de dépense', 'New expense request'), body: () => { const role = S.profile.role, cats = REQ_CATS(role); let cat = S.expCat || 'cleaning'; if (!cats.some(c => c[0] === cat)) cat = cats[0][0];
+    if (cat === 'salaries') return salaryExpForm(); if (cat === 'event') return eventExpForm();
+    const pupils = S.students.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+    return `<form data-form="exp">
+      <label class="f">${T('Nature de la dépense', 'Type of expense')}<select id="ex-cat" name="category" data-change="exp-cat">${cats.map(c => `<option value="${c[0]}" ${c[0] === cat ? 'selected' : ''}>${T(c[1], c[2])}</option>`).join('')}</select></label>
+      ${cat === 'refund' ? `<label class="f">${T('Élève concerné', 'Pupil concerned')}<select id="ex-stu" name="studentId" required data-change="exp-stu"><option value="">${T('Choisir l’élève', 'Choose the pupil')}</option>${pupils.map(p => `<option value="${p.id}" ${S.expStu === p.id ? 'selected' : ''}>${esc(p.name)} · ${LV[p.level]?.name || ''}${p.status === 'left' ? ' (' + T('parti', 'left') + ')' : ''}</option>`).join('')}</select></label>
+        <label class="f" style="flex-direction:row;align-items:center;gap:10px"><input type="checkbox" id="ex-left" name="markLeft" style="width:22px;min-height:22px">${T('Marquer l’élève comme ayant quitté l’école', 'Mark the pupil as having left the school')}</label>` : ''}
+      <label class="f">${T('Objet', 'What it is for')}<input id="ex-label" name="label" required placeholder="${cat === 'cleaning' ? T('ex. Matériel de nettoyage du trimestre', 'e.g. Cleaning materials for the term') : cat === 'repair' ? T('ex. Réparation de la porte de la Class 3', 'e.g. Repair of the Class 3 door') : T('ex. Facture d’octobre', 'e.g. October bill')}"></label>
+      <label class="f">${T('Explications', 'Explanation')}<span class="hint">${T('pourquoi cette dépense est nécessaire', 'why this expense is needed')}</span><textarea id="ex-note" name="note" rows="3" required></textarea></label>
+      <label class="f">${T('Détail des articles', 'Itemised list')}<span class="hint">${T('facultatif, une ligne par article : article ; montant. Le total est calculé.', 'optional, one line per item: item ; amount. The total is computed.')}</span><textarea id="ex-items" name="items" rows="4" data-change="ex-items" placeholder="${T('Javel 15 L ; 15000&#10;Savon liquide 10 L ; 15000', 'Bleach 15 L ; 15000&#10;Liquid soap 10 L ; 15000')}"></textarea></label>
+      <div class="grid2"><label class="f">${T('Montant total (FCFA)', 'Total amount (FCFA)')}<input id="ex-amount" name="amount" inputmode="numeric" required value="${cat === 'refund' && student(S.expStu) ? feesOf(student(S.expStu).level).reg : ''}"></label>
+        <label class="f">${T('N° de facture ou devis', 'Invoice or quote no.')}<span class="hint">${T('facultatif', 'optional')}</span><input id="ex-ref" name="ref"></label></div>
+      <label class="f">${T('Bénéficiaire ou fournisseur', 'Payee or supplier')}<span class="hint">${T('si déjà connu', 'if already known')}</span><input id="ex-ben" name="beneficiary" value="${cat === 'refund' && student(S.expStu) ? esc(student(S.expStu).parentName || '') : cat === 'electricity' ? 'ENEO' : ''}"></label>
+      <label class="f">${T('Justificatif : photo, devis ou facture', 'Supporting document: photo, quote or invoice')}<span class="hint">${T('obligatoire, jusqu’à 3 photos', 'required, up to 3 photos')}</span><input id="ex-photos" type="file" accept="image/*" multiple required></label>
+      <div class="banner small">${T('La demande est envoyée au président et au vice-président. Le paiement et le bon de décaissement se font après leur validation.', 'The request goes to the chairman and vice-chairman. Payment and voucher come after their approval.')}</div>
+      <button class="btn red" ${S.canWrite ? '' : 'disabled'}>${T('Soumettre pour validation', 'Submit for approval')}</button>
+    </form>`; }};
+}
+function voucherHTML(e) {
+  return `<div class="receipt">
+    <div class="hd"><img src="${LOGO}" alt="Logo"><div><div class="t">LES YEUX DU COEUR</div><div class="s">Bilingual Nursery &amp; Primary School · ${SCHOOL.addr}<br>Tel: ${SCHOOL.tel}</div></div></div>
+    <div class="title"><b>${T('Bon de décaissement', 'Disbursement voucher')} N° ${esc(e.voucher)}</b><span>Date: <b>${frDate(e.date)}</b></span></div>
+    <div class="ln"><span>${T('Payé à', 'Paid to')}</span><em>${esc(e.beneficiary)}</em></div>
+    <div class="ln"><span>${T('La somme de', 'The sum of')}</span><em>${cap(words(e.amount))} francs CFA</em></div>
+    <div class="ln"><span>${T('Pour', 'Being')}</span><em>${esc(expLine(e))}${e.studentName ? ' · ' + esc(e.studentName) + ' (' + esc(LV[e.level]?.name || '') + ')' : ''}</em></div>
+    <div class="ln"><span>${T('Mode', 'Paid by')}</span><em>${EXP_METHODS()[e.method] || ''}${e.ref ? ' · Ref ' + esc(e.ref) : ''}</em></div>
+    ${e.note ? `<div class="ln"><span>${T('Remarque', 'Note')}</span><em>${esc(e.note)}</em></div>` : ''}
+    <div class="ft"><div class="box num">${money(e.amount)}</div><div class="sig">${T('Signature de la secrétaire', 'Secretary’s signature')}<br><b>${esc(e.by || '')}</b><br><br>${T('Signature du bénéficiaire', 'Recipient’s signature')}</div><img class="stamp" src="${STAMP}" alt="L.Y.C"></div>
+    ${e.cancelled ? '<div class="void">CANCELLED</div>' : ''}
+  </div>`;
+}
+function sheetExp(id) {
+  return {title: () => T('Bon de décaissement', 'Disbursement voucher'), live: true, body: () => { const e = S.expenses.find(x => x.id === id); if (!e) return `<div class="empty">${T('Bon introuvable.', 'Voucher not found.')}</div>`;
+    return `${voucherHTML(e)}
+    ${e.cancelled ? `<div class="banner red small">${T('Annulé le', 'Cancelled on')} ${frDate(e.cancelledAt)} : ${esc(e.cancelReason || '')}</div>` : ''}
+    <div class="btns"><button class="btn primary" data-a="exp-img" data-v="${e.id}">${T('Partager ou enregistrer', 'Share or save')}</button>${canWriteExpenses() && !e.cancelled ? `<button class="btn" data-a="exp-cancel" data-v="${e.id}">${T('Annuler ce bon', 'Cancel this voucher')}</button>` : ''}</div>
+    ${S.expCancelling === e.id ? `<form data-form="exp-cancel" data-id="${e.id}"><label class="f">${T('Motif de l’annulation', 'Reason for cancelling')}<input id="exc-reason" name="reason" required autofocus></label><button class="btn red">${T('Confirmer l’annulation', 'Confirm cancellation')}</button></form>` : ''}
+    <p class="small muted" style="margin:0">${T('Un bon enregistré ne peut être ni modifié ni supprimé, seulement annulé avec un motif.', 'A saved voucher cannot be changed or deleted, only cancelled with a reason.')}</p>`; }};
+}
+async function voucherPNG(e) {
+  const W = 1400, H = 760, c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.strokeStyle = '#333'; x.setLineDash([3, 6]); x.lineWidth = 3; x.strokeRect(24, 24, W - 48, H - 48); x.setLineDash([]);
+  const logo = await loadImg(LOGO), stamp = await loadImg(STAMP);
+  if (logo) x.drawImage(logo, 60, 60, 260, 260 * logo.height / logo.width);
+  x.fillStyle = '#111'; x.textAlign = 'center'; x.font = '800 54px Arial, sans-serif'; x.fillText('LES YEUX DU COEUR', 860, 100);
+  x.font = '600 28px "Times New Roman", serif'; x.fillText('Bilingual Nursery & Primary School · ' + SCHOOL.addr, 860, 145); x.fillText('Tel: ' + SCHOOL.tel, 860, 182);
+  x.font = '700 40px "Times New Roman", serif'; x.fillText(T('Bon de décaissement', 'Disbursement voucher') + ' N° ' + e.voucher, 640, 290);
+  x.textAlign = 'left'; x.font = '600 28px "Times New Roman", serif'; x.fillText('Date: ' + frDate(e.date), 1060, 290);
+  const lines = [[T('Payé à', 'Paid to'), e.beneficiary], [T('La somme de', 'The sum of'), cap(words(e.amount)) + ' francs CFA'], [T('Pour', 'Being'), expLine(e) + (e.studentName ? ' · ' + e.studentName : '')], [T('Mode', 'Paid by'), (EXP_METHODS()[e.method] || '') + (e.ref ? ' · Ref ' + e.ref : '')]];
+  lines.forEach(([k, v], i) => { const y = 370 + i * 60; x.font = '600 28px "Times New Roman", serif'; x.fillStyle = '#333'; x.fillText(k, 80, y); const w = x.measureText(k).width;
+    x.font = '700 30px "Times New Roman", serif'; x.fillStyle = '#111'; let t = String(v || ''); while (x.measureText(t).width > W - 200 - w && t.length > 4) t = t.slice(0, -2); x.fillText(t, 100 + w, y - 2);
+    x.setLineDash([2, 6]); x.strokeStyle = '#444'; x.lineWidth = 2; x.beginPath(); x.moveTo(90 + w, y + 8); x.lineTo(W - 80, y + 8); x.stroke(); x.setLineDash([]); });
+  x.lineWidth = 4; x.strokeStyle = '#111'; x.strokeRect(80, 640, 380, 62); x.font = '800 32px Arial'; x.fillText(money(e.amount), 100, 682);
+  x.textAlign = 'right'; x.font = '600 26px "Times New Roman", serif'; x.fillText(T('Secrétaire', 'Secretary') + ' : ' + (e.by || ''), W - 90, 640); x.fillText(T('Signature du bénéficiaire', 'Recipient’s signature') + ' : ..................', W - 90, 700);
+  if (stamp) { x.save(); x.globalAlpha = .85; x.translate(W - 520, 640); x.rotate(-0.21); x.drawImage(stamp, -100, -100, 200, 200); x.restore(); }
+  if (e.cancelled) { x.save(); x.translate(W / 2, H / 2); x.rotate(-0.3); x.fillStyle = 'rgba(193,38,49,.35)'; x.font = '900 140px Arial'; x.textAlign = 'center'; x.fillText('CANCELLED', 0, 40); x.restore(); }
+  return new Promise(r => c.toBlob(r, 'image/png'));
+}
 async function nextReceiptNo() {
   if (!navigator.onLine) return Number(String(Date.now()).slice(-6));
   const ref = S.db.doc('counters/receipts');
@@ -255,12 +579,14 @@ document.addEventListener('focusout', () => setTimeout(() => { if (S.pendingRend
 const ADMIN_ROLES = ['president', 'vicepresident'], MGR_ROLES = ['president', 'vicepresident', 'direction', 'assistant'];
 const isAdmin = (r = S.profile?.role) => ADMIN_ROLES.includes(r);
 const isMgr = (r = S.profile?.role) => MGR_ROLES.includes(r);
-const withMgr = o => ({...o, president: o.direction, vicepresident: o.direction, assistant: o.direction});
+const withMgr = o => { const noFees = o.direction.filter(t => t[0] !== 'frais'); return {...o, president: o.direction, vicepresident: o.direction, direction: noFees, assistant: noFees}; };
+const isCashier = (r = S.profile?.role) => r === 'secretary' || r === 'accountant';
 const ROLE_TABS = () => withMgr({
-  direction: [['home', T('Accueil', 'Home'), 'home'], ['appel', T('Présences', 'Attendance'), 'check'], ['frais', T('Frais', 'Fees'), 'money'], ['messages', T('Messages', 'Messages'), 'msg'], ['plus', T('Plus', 'More'), 'more']],
-  teacher: [['appel', T('Appel', 'Roll call'), 'check'], ['eleves', T('Élèves', 'Pupils'), 'kids'], ['messages', T('Messages', 'Messages'), 'msg'], ['profil', T('Profil', 'Profile'), 'user']],
+  direction: [['home', T('Accueil', 'Home'), 'home'], ['appel', T('Présences', 'Attendance'), 'check'], ['frais', T('Finances', 'Finances'), 'money'], ['messages', T('Messages', 'Messages'), 'msg'], ['plus', T('Plus', 'More'), 'more']],
+  teacher: [['appel', T('Appel', 'Roll call'), 'check'], ['eleves', T('Élèves', 'Pupils'), 'kids'], ['notes', T('Notes', 'Marks'), 'stats'], ['messages', T('Messages', 'Messages'), 'msg'], ['profil', T('Profil', 'Profile'), 'user']],
   accountant: [['encaisser', T('Encaisser', 'Collect'), 'money'], ['impayes', T('Impayés', 'Arrears'), 'alert'], ['recus', T('Reçus', 'Receipts'), 'receipt'], ['profil', T('Profil', 'Profile'), 'user']],
-  secretary: [['pointage', T('Pointage', 'Sign-in'), 'clock'], ['eleves', T('Inscriptions', 'Enrolment'), 'kids'], ['profil', T('Profil', 'Profile'), 'user']],
+  supervisor: [['appel', T('Présences', 'Attendance'), 'check'], ['personnel', T('Personnel', 'Staff'), 'clock'], ['travaux', T('Travaux', 'Works'), 'home'], ['depenses', T('Dépenses', 'Expenses'), 'receipt'], ['plus', T('Plus', 'More'), 'more']],
+  secretary: [['encaisser', T('Encaisser', 'Collect'), 'money'], ['eleves', T('Inscriptions', 'Enrolment'), 'kids'], ['decaisse', T('Décaisser', 'Pay out'), 'receipt'], ['pointage', T('Pointage', 'Sign-in'), 'clock'], ['plus', T('Plus', 'More'), 'more']],
   parent: [['enfant', T('Mon enfant', 'My child'), 'kids'], ['messages', T('Messages', 'Messages'), 'msg'], ['ecole', T('L’école', 'School'), 'home'], ['profil', T('Profil', 'Profile'), 'user']]
 });
 
@@ -269,7 +595,7 @@ function render() {
   const p = S.profile;
   if (!p) { app.innerHTML = viewGate(); return; }
   const tabs = ROLE_TABS()[p.role];
-  const extra = isMgr(p.role) ? ['eleves','stats','profil','encaisser','impayes','recus','personnel','ecole', ...(isAdmin(p.role) ? ['reglages','acces'] : [])] : ['profil','eleves','ecole'];
+  const extra = isMgr(p.role) ? ['notes','eleves','stats','profil','personnel','ecole','calendrier', ...(canSeeWorks(p.role) ? ['travaux'] : []), ...(canSeePay(p.role) ? ['fonds'] : []), ...(isAdmin(p.role) ? ['reglages','acces','decaisse','impayes','recus','collecte'] : [])] : ['profil','eleves','ecole','calendrier', ...(p.role === 'supervisor' ? ['personnel','travaux','depenses'] : []), ...(isCashier(p.role) ? ['recus','impayes','encaisser','fonds'] : [])];
   if (!S.view || !tabs.some(t => t[0] === S.view) && !extra.includes(S.view)) S.view = tabs[0][0];
   const sub = p.role === 'teacher' ? `${LV[p.level]?.name || ''} · ${esc(p.name || '')}`
     : p.role === 'parent' ? `${T('Parent', 'Parent')} · ${esc(parentKids()[0]?.parentName || p.phone || '')}` : `${ROLE_NAME()[p.role]} · ${esc(p.name || '')}`;
@@ -288,7 +614,7 @@ function render() {
     ${viewBody()}
   </div></main>
   <nav class="tabs" aria-label="${T('Navigation', 'Navigation')}"><div class="in">
-    ${tabs.map(([id, label, ic]) => `<button data-a="tab" data-v="${id}" ${S.view === id || (id === 'plus' && ['eleves','stats','reglages','profil','impayes','recus','personnel','ecole','acces'].includes(S.view)) || (id === 'frais' && S.view === 'encaisser') ? 'aria-current="page"' : ''}><span class="dot" ${id === 'messages' && unread ? `data-n="${unread}"` : ''}>${ICON[ic]}</span>${label}</button>`).join('')}
+    ${tabs.map(([id, label, ic]) => `<button data-a="tab" data-v="${id}" ${S.view === id || (id === 'plus' && ['notes','fonds','calendrier','collecte','eleves','stats','reglages','profil','impayes','recus','personnel','ecole','decaisse','acces'].includes(S.view)) || (id === 'frais' && S.view === 'encaisser') ? 'aria-current="page"' : ''}><span class="dot" ${id === 'messages' && unread ? `data-n="${unread}"` : ''}>${ICON[ic]}</span>${label}</button>`).join('')}
   </div></nav>
   ${S.sheet ? sheetHTML() : ''}`;
   window.scrollTo(0, scrollY);
@@ -298,7 +624,7 @@ const allLoaded = () => S.dbOk !== true || Object.values(S.loaded).every(Boolean
 function viewBody() {
   if (S.dbOk === null || (S.dbOk && !allLoaded())) return `<div class="panel empty"><b>${T('Chargement des données…', 'Loading school data…')}</b></div>`;
   const map = {home:viewHome, appel:viewAppel, frais:viewFrais, messages:viewMessages, plus:viewPlus, eleves:viewEleves, stats:viewStats,
-    reglages:viewReglages, profil:viewProfil, ecole:viewEcole, personnel:viewPersonnel, acces:viewAcces, pointage:viewPointage, encaisser:viewEncaisser, impayes:viewImpayes, recus:viewRecus, enfant:viewEnfant};
+    reglages:viewReglages, profil:viewProfil, ecole:viewEcole, calendrier:viewCalendrier, travaux:viewTravaux, fonds:viewFonds, decaisse:viewDecaisse, depenses:viewDepenses, notes:viewNotes, collecte:viewCollecte, personnel:viewPersonnel, acces:viewAcces, pointage:viewPointage, encaisser:viewEncaisser, impayes:viewImpayes, recus:viewRecus, enfant:viewEnfant};
   return (map[S.view] || viewHome)();
 }
 
@@ -344,7 +670,7 @@ function sheetSetup() {
 }
 
 /* ----- accounts (direction) ----- */
-const ROLE_ORDER = ['president', 'vicepresident', 'direction', 'assistant', 'secretary', 'accountant', 'teacher', 'parent'];
+const ROLE_ORDER = ['president', 'vicepresident', 'direction', 'assistant', 'secretary', 'supervisor', 'teacher', 'parent'];
 function waLink(u) {
   const msg = T(`${SCHOOL.name} – accès à l’application de l’école${u.name ? ' pour ' + u.name : ''}\nLien : ${APP_URL}\nNuméro : ${u.phone}\nCode : ${u.code}\nOuvrez le lien, connectez-vous, puis choisissez « Ajouter à l’écran d’accueil » dans le menu du navigateur.`,
     `${SCHOOL.name} – access to the school app${u.name ? ' for ' + u.name : ''}\nLink: ${APP_URL}\nPhone: ${u.phone}\nCode: ${u.code}\nOpen the link, sign in, then choose “Add to Home screen” in the browser menu.`);
@@ -458,7 +784,7 @@ const fromMin = n => pad(Math.floor(n / 60)) + ':' + pad(Math.round(n % 60));
 function STAFF() {
   return [{key: 'DIR', name: cfg().directorName || '', role: T('Directrice', 'Head teacher')},
     {key: 'ADJ', name: cfg().assistantName || '', role: T('Assistante directrice', 'Assistant head teacher')},
-    {key: 'SEC', name: cfg().secretaryName || '', role: T('Secrétaire', 'Secretary')},
+    {key: 'SEC', name: cfg().secretaryName || '', role: T('Secrétaire comptable', 'Secretary-bursar')},
     ...LEVELS.map(l => ({key: 'T_' + l.id, name: teacherOf(l.id), role: T('Titulaire, ', 'Class teacher, ') + l.name}))];
 }
 const myStaffKey = () => S.profile?.role === 'teacher' ? 'T_' + S.profile.level : ({direction: 'DIR', assistant: 'ADJ', secretary: 'SEC'})[S.profile?.role] || null;
@@ -672,10 +998,10 @@ function sheetVerify(v) {
     const r = verifyResult(v.id, v.key), s = r.s, role = S.profile.role;
     const color = {green: 'var(--good)', red: 'var(--stamp)', amber: 'var(--warn)'}[r.tone], tint = {green: 'var(--good-tint)', red: 'var(--stamp-tint)', amber: 'var(--warn-tint)'}[r.tone];
     let detail = '';
-    if (s) { const a = S.att[attKey(s.level, today())], m = a?.marks?.[s.id]; const f = (isMgr() || role === 'accountant') && feesSet() ? feeStatus(s) : null;
+    if (s) { const a = S.att[attKey(s.level, today())], m = a?.marks?.[s.id]; const f = (isAdmin() || isCashier(role)) && feesSet() ? feeStatus(s) : null;
       detail = `<div class="panel" style="padding:14px;display:flex;gap:14px;align-items:flex-start">${photoBox(s, 110)}<div style="display:flex;flex-direction:column;gap:4px;min-width:0"><b style="font-family:var(--f-display);font-size:1.25rem">${esc(s.name)}</b><span>${LV[s.level]?.name} · ${YEAR}</span>${s.birth ? `<span class="small muted">${T('Né(e) le', 'Born')} ${frDate(s.birth)}</span>` : ''}<span class="small">${T('Parent', 'Parent')} : <b>${esc(s.parentName || '—')}</b> · ${esc(s.parentPhone || '')}</span>
         <span class="small">${T('Aujourd’hui', 'Today')} : ${m ? `<b>${MARKS()[m]}</b>` : T('appel pas encore fait', 'roll call not taken yet')}</span><span class="small">${T('Fin des cours', 'Classes end')} : <b>${PUPIL_HOURS(s.level)[1]}</b></span>${f ? `<span class="small">${T('Frais', 'Fees')} : ${f.late ? `<b style="color:var(--stamp)">${money(f.late)} ${T('échus', 'due')}</b>` : `<b style="color:var(--good)">${T('à jour', 'up to date')}</b>`}</span>` : ''}</div></div>
-        <div class="btns"><button class="btn" data-a="student" data-v="${s.id}">${T('Voir la fiche', 'Open record')}</button>${f ? `<button class="btn" data-a="pay" data-v="${s.id}">${T('Encaisser', 'Record payment')}</button>` : ''}</div>`; }
+        <div class="btns"><button class="btn" data-a="student" data-v="${s.id}">${T('Voir la fiche', 'Open record')}</button>${f && isCashier(role) ? `<button class="btn" data-a="pay" data-v="${s.id}">${T('Encaisser', 'Record payment')}</button>` : ''}</div>`; }
     return `<div style="background:${tint};color:${color};border-radius:var(--r);padding:16px;font-weight:800;font-size:1.1rem;display:flex;gap:10px;align-items:center"><span style="font-size:1.6rem" aria-hidden="true">${r.ok ? '✓' : '✕'}</span><span>${r.msg}</span></div>
       ${detail}<button class="btn primary" data-a="scan">${T('Vérifier une autre carte', 'Check another card')}</button>`; }};
 }
@@ -826,6 +1152,152 @@ function sheetSecEdit(key) {
 }
 
 /* ----- direction home ----- */
+/* ---------- admissions (head teacher) ---------- */
+const admState = s => s.admission || 'admitted';
+const canAdmit = (r = S.profile?.role) => r === 'direction';
+const canSeeAdmit = (r = S.profile?.role) => ['direction', 'assistant', 'president', 'vicepresident', 'secretary', 'accountant'].includes(r);
+const admitLabel = n => `LYC-A-${YEAR.slice(2,4)}${YEAR.slice(7,9)}-${String(n).padStart(4,'0')}`;
+const pendingAdmissions = () => S.students.filter(s => s.status !== 'left' && admState(s) === 'pending').sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+const admChip = s => { const a = admState(s); return a === 'pending' ? `<span class="chip amber">${T('Admission à prononcer', 'Admission pending')}</span>` : a === 'refused' ? `<span class="chip red">${T('Admission refusée', 'Admission refused')}</span>` : ''; };
+async function admitFields(lv) { const n = await nextNo('admissions'); return {admission: 'admitted', admitNo: admitLabel(n), admitLevel: lv, admittedBy: S.profile.name || cfg().directorName || '', admittedAt: today()}; }
+function admissionBlock(s) {
+  const a = admState(s), role = S.profile.role;
+  if (a === 'pending') return `<div class="panel" style="padding:12px 14px;display:flex;flex-direction:column;gap:8px;border-left:4px solid var(--warn)">
+    <b>${T('Admission à prononcer par la directrice', 'Admission to be decided by the head teacher')}</b>
+    <span class="small muted">${T('Inscrit(e) par', 'Enrolled by')} ${esc(s.enrolledBy || '—')} ${s.createdAt ? T('le ', 'on ') + frDate(s.createdAt) : ''} · ${T('classe demandée', 'class requested')} : ${LV[s.level]?.name || ''}</span>
+    ${canAdmit(role) ? `<form data-form="admit" data-id="${s.id}" style="display:flex;flex-direction:column;gap:8px"><label class="f">${T('Admis(e) en', 'Admitted to')}<select name="level">${levelOptions(s.level)}</select></label>
+      <div class="btns"><button class="btn primary">${T('Admettre et émettre l’attestation', 'Admit and issue the certificate')}</button><button type="button" class="btn" data-a="admit-refuse-ask" data-v="${s.id}">${T('Refuser', 'Refuse')}</button></div></form>
+      ${S.admRefusing === s.id ? `<form data-form="admit-refuse" data-id="${s.id}"><label class="f">${T('Motif du refus', 'Reason for refusing')}<input name="reason" required autofocus></label><button class="btn red">${T('Confirmer le refus', 'Confirm refusal')}</button></form>` : ''}` : ''}</div>`;
+  if (a === 'refused') return `<div class="banner red small">${T('Admission refusée par', 'Admission refused by')} ${esc(s.admittedBy || '')} ${T('le', 'on')} ${frDate(s.admittedAt)}${s.admitRefusal ? ' : ' + esc(s.admitRefusal) : ''}</div>`;
+  if (!canSeeAdmit(role)) return '';
+  return `<div class="panel row" style="flex-wrap:wrap"><span class="grow"><span class="name">${T('Admis(e) en', 'Admitted to')} ${LV[s.admitLevel || s.level]?.name || ''}</span><br><span class="small muted">${s.admitNo ? `${T('Attestation N°', 'Certificate no.')} ${esc(s.admitNo)} · ${esc(s.admittedBy || '')} · ${frDate(s.admittedAt)}` : T('Aucune attestation émise', 'No certificate issued yet')}</span></span>
+    ${s.admitNo ? `<button class="btn sm" data-a="admit-cert" data-v="${s.id}">${T('Attestation', 'Certificate')}</button>` : canAdmit(role) ? `<button class="btn sm primary" data-a="admit-issue" data-v="${s.id}">${T('Émettre l’attestation', 'Issue certificate')}</button>` : ''}</div>`;
+}
+function admitText(s) {
+  const dir = s.admittedBy || cfg().directorName || '', lv = LV[s.admitLevel || s.level]?.name || '', g = s.sex === 'F';
+  return {fr: `Je soussignée, ${dir}, Directrice de l’école Les Yeux du Coeur, Bilingual Nursery & Primary School, Isokolo – Limbe, atteste que l’élève ${s.name}${s.birth ? (g ? ', née le ' : ', né le ') + frDate(s.birth) : ''}, est ${g ? 'admise' : s.sex === 'M' ? 'admis' : 'admis(e)'} en classe de ${lv} pour l’année scolaire ${YEAR}.`,
+    en: `I, the undersigned, ${dir}, Head Teacher of Les Yeux du Coeur Bilingual Nursery & Primary School, Isokolo – Limbe, certify that the pupil ${s.name}${s.birth ? ', born on ' + frDate(s.birth) : ''}, has been admitted to ${lv} for the ${YEAR} school year.`};
+}
+function admitHTML(s) {
+  const t = admitText(s);
+  return `<div class="receipt"><div class="hd"><img src="${LOGO}" alt="Logo"><div><div class="t">LES YEUX DU COEUR</div><div class="s">Bilingual Nursery &amp; Primary School · ${SCHOOL.addr}<br>Tel: ${SCHOOL.tel}</div></div></div>
+    <div class="title"><b>${T('Attestation d’admission', 'Admission certificate')} N° ${esc(s.admitNo || '')}</b><span>Date: <b>${frDate(s.admittedAt)}</b></span></div>
+    <p style="margin:10px 0;line-height:1.5">${esc(T(t.fr, t.en))}</p>
+    <p style="margin:0 0 10px;line-height:1.5" class="small">${esc(T('En foi de quoi la présente attestation lui est délivrée pour servir et valoir ce que de droit.', 'This certificate is issued to serve where and when necessary.'))}</p>
+    <div class="ft"><div class="sig">${T('La Directrice', 'The Head Teacher')}<br><b>${esc(s.admittedBy || cfg().directorName || '')}</b></div><img class="stamp" src="${STAMP}" alt="L.Y.C"></div></div>`;
+}
+function wrapLines(x, text, maxW) { const words = text.split(' '), lines = []; let l = ''; for (const w of words) { const t = l ? l + ' ' + w : w; if (x.measureText(t).width > maxW && l) { lines.push(l); l = w; } else l = t; } if (l) lines.push(l); return lines; }
+async function admitPNG(s) {
+  const W = 1400, H = 1000, c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d'), t = admitText(s);
+  x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.strokeStyle = '#333'; x.lineWidth = 3; x.strokeRect(24, 24, W - 48, H - 48);
+  const logo = await loadImg(LOGO), stamp = await loadImg(STAMP);
+  if (logo) x.drawImage(logo, 60, 60, 230, 230 * logo.height / logo.width);
+  x.fillStyle = '#111'; x.textAlign = 'center'; x.font = '800 54px Arial, sans-serif'; x.fillText('LES YEUX DU COEUR', 840, 105);
+  x.font = '600 28px "Times New Roman", serif'; x.fillText('Bilingual Nursery & Primary School · ' + SCHOOL.addr, 840, 150); x.fillText('Tel: ' + SCHOOL.tel, 840, 188);
+  x.font = '700 46px "Times New Roman", serif'; x.fillText(T('ATTESTATION D’ADMISSION', 'ADMISSION CERTIFICATE'), W / 2, 330);
+  x.font = '600 28px "Times New Roman", serif'; x.fillText('N° ' + (s.admitNo || '') + '   ·   ' + YEAR, W / 2, 375);
+  x.textAlign = 'left'; x.font = '400 34px "Times New Roman", serif'; let y = 460;
+  for (const l of wrapLines(x, T(t.fr, t.en), W - 220)) { x.fillText(l, 110, y); y += 50; }
+  y += 20; x.font = 'italic 400 28px "Times New Roman", serif';
+  for (const l of wrapLines(x, T('En foi de quoi la présente attestation lui est délivrée pour servir et valoir ce que de droit.', 'This certificate is issued to serve where and when necessary.'), W - 220)) { x.fillText(l, 110, y); y += 42; }
+  x.textAlign = 'right'; x.font = '600 30px "Times New Roman", serif'; x.fillText(T('Fait à Limbe, le ', 'Limbe, ') + frDate(s.admittedAt), W - 110, 820);
+  x.fillText(T('La Directrice', 'The Head Teacher'), W - 110, 870); x.font = '700 30px "Times New Roman", serif'; x.fillText(s.admittedBy || cfg().directorName || '', W - 110, 915);
+  if (stamp) { x.save(); x.globalAlpha = .85; x.translate(W - 620, 850); x.rotate(-0.21); x.drawImage(stamp, -100, -100, 200, 200); x.restore(); }
+  return new Promise(r => c.toBlob(r, 'image/png'));
+}
+function sheetAdmit(id) {
+  return {title: () => T('Attestation d’admission', 'Admission certificate'), live: true, body: () => { const s = student(id); if (!s || !s.admitNo) return `<div class="empty">${T('Aucune attestation.', 'No certificate.')}</div>`;
+    return `${admitHTML(s)}<button class="btn primary" data-a="admit-img" data-v="${s.id}">${T('Partager ou enregistrer', 'Share or save')}</button>`; }};
+}
+function admissionsCard() {
+  const list = pendingAdmissions(); if (!list.length) return '';
+  return `<div class="section"><h3>${T('Admissions à prononcer', 'Admissions to decide')} (${list.length})</h3><div class="panel rows">${list.map(s => `<button class="row" data-a="student" data-v="${s.id}"><span class="grow"><span class="name">${esc(s.name)}</span><br><span class="small muted">${LV[s.level]?.name || ''} · ${T('inscrit(e) par', 'enrolled by')} ${esc(s.enrolledBy || '—')}${s.createdAt ? ' · ' + frDate(s.createdAt) : ''}</span></span><span class="chip amber">${T('À admettre', 'To admit')}</span></button>`).join('')}</div></div>`;
+}
+
+/* ---------- marks and teachers' comments ---------- */
+const SUBJ_DEFAULT = lv => LV[lv]?.sec === 'nursery'
+  ? ['English Language', 'French', 'Numeracy', 'Pre-writing / Writing', 'Drawing & Colouring', 'Rhymes & Songs']
+  : ['English Language', 'French', 'Mathematics', 'Science & Technology', 'Social Studies', 'Citizenship & Moral Education', 'ICT', 'Physical Education', 'Arts & Crafts'];
+const gKey = (lv, t) => `${YEAR}_${lv}_T${t}`;
+const gDoc = (lv, t) => S.grades[gKey(lv, t)] || null;
+const G_ST = () => ({draft: [T('En saisie', 'Being entered'), 'grey'], submitted: [T('À vérifier', 'To check'), 'amber'], returned: [T('Renvoyé à l’enseignant', 'Sent back'), 'red'], validated: [T('Vérifié', 'Checked'), 'green']});
+const gChip = g => { const c = G_ST()[g?.status || 'none'] || [T('Pas commencé', 'Not started'), 'grey']; return `<span class="chip ${c[1]}">${c[0]}</span>`; };
+const canGrade = (lv, r = S.profile?.role) => r === 'teacher' && S.profile?.level === lv;
+const canCheckGrades = (r = S.profile?.role) => ['direction', 'president', 'vicepresident'].includes(r);
+const canSeeGrades = (r = S.profile?.role) => r === 'teacher' || isMgr(r);
+const fmt20 = v => v == null || v === '' ? '' : String(Math.round(v * 100) / 100).replace('.', ',');
+const parse20 = v => { const t = String(v ?? '').trim().replace(',', '.'); if (!t) return null; const n = Number(t); return isFinite(n) ? n : NaN; };
+function gStats(lv, g) {
+  const subs = g?.subjects || SUBJ_DEFAULT(lv), pupils = byLevel(lv);
+  const rows = pupils.map(s => { const m = g?.marks?.[s.id] || {}; const vals = subs.map(k => m[k]).filter(v => typeof v === 'number'); return {s, n: vals.length, avg: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null}; });
+  const ranked = rows.filter(r => r.avg != null).sort((a, b) => b.avg - a.avg); ranked.forEach((r, i) => r.rank = i > 0 && Math.abs(ranked[i - 1].avg - r.avg) < 1e-9 ? ranked[i - 1].rank : i + 1);
+  const missing = rows.reduce((t, r) => t + subs.length - r.n, 0), noRemark = pupils.filter(s => !String(g?.remarks?.[s.id] || '').trim()).length;
+  const avgs = ranked.map(r => r.avg);
+  return {subs, rows, missing, noRemark, classAvg: avgs.length ? avgs.reduce((a, b) => a + b, 0) / avgs.length : null, pass: avgs.filter(a => a >= 10).length};
+}
+const rankTxt = n => n ? (EN() ? n + (n % 10 === 1 && n % 100 !== 11 ? 'st' : n % 10 === 2 && n % 100 !== 12 ? 'nd' : n % 10 === 3 && n % 100 !== 13 ? 'rd' : 'th') : n + (n === 1 ? 'er' : 'e')) : '—';
+function viewNotes() {
+  const p = S.profile, term = S.gTerm || termOf(today());
+  const termSeg = `<div class="seg" role="group" aria-label="${T('Trimestre', 'Term')}">${[1, 2, 3].map(t => `<button data-a="g-term" data-v="${t}" aria-pressed="${t === term}">${TERMS[t]}</button>`).join('')}</div>`;
+  if (p.role === 'teacher') return viewNotesTeacher(p.level, term, termSeg);
+  return `<div class="section"><h2>${T('Notes et appréciations', 'Marks and comments')}</h2>
+    <p class="small muted" style="margin:0">${T('Chaque titulaire saisit les notes sur 20 et une appréciation par élève, puis les soumet. La directrice vérifie les notes et les appréciations, ajoute son observation, puis valide ou renvoie à l’enseignant.', 'Each class teacher enters marks out of 20 and a comment for each pupil, then submits them. The head teacher checks marks and comments, adds her remark, then approves or sends them back.')}</p>${termSeg}</div>
+    <div class="panel rows">${LEVELS.map(l => { const g = gDoc(l.id, term), st = gStats(l.id, g); return `<button class="row" data-a="g-open" data-v="${l.id}" data-s="${term}"><span class="grow"><span class="name">${l.name}</span><br><span class="small muted">${esc(teacherOf(l.id) || T('Titulaire à renseigner', 'Class teacher not set'))}${g && st.classAvg != null ? ' · ' + T('moyenne ', 'average ') + fmt20(st.classAvg) + '/20' : ''}</span></span>${gChip(g)}</button>`; }).join('')}</div>`;
+}
+function viewNotesTeacher(lv, term, termSeg) {
+  const g = gDoc(lv, term), st = gStats(lv, g), locked = g && ['submitted', 'validated'].includes(g.status), pupils = byLevel(lv);
+  const mode = st.subs.includes(S.gMode) || S.gMode === '_rem' ? S.gMode : st.subs[0];
+  return `<div class="section"><div class="section-head"><h2>${T('Notes', 'Marks')} · ${LV[lv]?.name}</h2>${gChip(g)}</div>${termSeg}
+    ${g?.status === 'returned' && g.returnNote ? `<div class="banner red small">${T('Renvoyé par la directrice', 'Sent back by the head teacher')} : ${esc(g.returnNote)}</div>` : ''}
+    ${g?.status === 'submitted' ? `<div class="banner small">${T('Notes soumises à la directrice, en attente de vérification.', 'Marks submitted to the head teacher, awaiting checking.')}</div>` : ''}
+    ${g?.status === 'validated' ? `<div class="banner small">${T('Notes vérifiées par', 'Marks checked by')} ${esc(g.validatedBy || '')} ${T('le', 'on')} ${frDate(g.validatedAt)}.</div>` : ''}</div>
+    ${!pupils.length ? `<div class="panel empty">${T('Aucun élève dans la classe.', 'No pupils in the class.')}</div>` : `
+    ${!locked ? `<details class="panel" style="padding:10px 14px"><summary class="small"><b>${T('Matières', 'Subjects')}</b> (${st.subs.length})</summary><form data-form="g-subjects" data-id="${lv}" data-s="${term}"><label class="f"><span class="hint">${T('une matière par ligne', 'one subject per line')}</span><textarea name="subs" rows="7">${esc(st.subs.join('\n'))}</textarea></label><button class="btn sm">${T('Enregistrer les matières', 'Save subjects')}</button></form></details>` : ''}
+    <div class="seg" role="group" style="flex-wrap:wrap">${st.subs.map(k => `<button data-a="g-mode" data-v="${esc(k)}" aria-pressed="${k === mode}">${esc(k)}</button>`).join('')}<button data-a="g-mode" data-v="_rem" aria-pressed="${mode === '_rem'}">${T('Appréciations', 'Comments')}</button></div>
+    <form data-form="g-save" data-id="${lv}" data-s="${term}" data-m="${esc(mode)}"><div class="panel rows">${pupils.map(s => mode === '_rem'
+      ? `<label class="row" style="flex-direction:column;align-items:stretch;gap:4px"><span class="name">${esc(s.name)}</span><textarea name="r-${s.id}" rows="2" ${locked ? 'disabled' : ''} placeholder="${T('ex. Bon travail, doit soigner l’écriture', 'e.g. Good work, must improve handwriting')}">${esc(g?.remarks?.[s.id] || '')}</textarea>${g?.headRemarks?.[s.id] ? `<span class="small muted">${T('Directrice', 'Head teacher')} : ${esc(g.headRemarks[s.id])}</span>` : ''}</label>`
+      : `<label class="row"><span class="grow name">${esc(s.name)}</span><input name="m-${s.id}" inputmode="decimal" style="width:84px;text-align:center" value="${fmt20(g?.marks?.[s.id]?.[mode])}" ${locked ? 'disabled' : ''} placeholder="/20"></label>`).join('')}</div>
+      ${!locked ? `<button class="btn primary">${mode === '_rem' ? T('Enregistrer les appréciations', 'Save comments') : T('Enregistrer les notes de ', 'Save marks for ') + esc(mode)}</button>` : ''}</form>
+    <div class="section"><h3>${T('Récapitulatif', 'Summary')}</h3>${gSummary(lv, g, st, false)}</div>
+    ${!locked ? `<div class="panel" style="padding:12px 14px;display:flex;flex-direction:column;gap:8px">${st.missing || st.noRemark ? `<span class="small" style="color:var(--warn)">${T(`Il manque ${st.missing} note(s) et ${st.noRemark} appréciation(s).`, `${st.missing} mark(s) and ${st.noRemark} comment(s) are missing.`)}</span>` : `<span class="small">${T('Toutes les notes et appréciations sont saisies.', 'All marks and comments are entered.')}</span>`}
+      <button class="btn red" data-a="g-submit" data-v="${lv}" data-s="${term}" ${g ? '' : 'disabled'}>${T('Soumettre à la directrice', 'Submit to the head teacher')}</button></div>` : ''}`}`;
+}
+function gSummary(lv, g, st, clickable) {
+  if (!st.rows.length) return `<div class="panel empty">${T('Aucun élève.', 'No pupils.')}</div>`;
+  const rows = st.rows.slice().sort((a, b) => (a.rank || 999) - (b.rank || 999) || a.s.name.localeCompare(b.s.name, 'fr'));
+  return `<div class="kpis"><div class="kpi"><span class="v">${st.classAvg != null ? fmt20(st.classAvg) : '—'}</span><span class="l">${T('moyenne de la classe /20', 'class average /20')}</span></div><div class="kpi"><span class="v">${st.pass}/${st.rows.length}</span><span class="l">${T('élèves à 10 ou plus', 'pupils at 10 or above')}</span></div></div>
+    <div class="panel tbl"><table class="tight"><thead><tr><th style="text-align:left">${T('Rang', 'Rank')}</th><th style="text-align:left">${T('Élève', 'Pupil')}</th><th>${T('Moy.', 'Avg')}</th><th>${T('Notes', 'Marks')}</th></tr></thead><tbody>${rows.map(r => `<tr ${clickable ? `data-a="g-pupil" data-v="${r.s.id}" style="cursor:pointer"` : ''}><td>${rankTxt(r.rank)}</td><td style="white-space:normal;text-align:left">${esc(r.s.name)}${clickable && S.gPupil === r.s.id ? ' ▾' : ''}</td><td class="num"><b style="color:${r.avg != null && r.avg < 10 ? 'var(--stamp)' : 'inherit'}">${r.avg != null ? fmt20(r.avg) : '—'}</b></td><td class="num small">${r.n}/${st.subs.length}</td></tr>`).join('')}</tbody></table></div>`;
+}
+function sheetGrades(lv, term) {
+  return {title: () => `${T('Notes', 'Marks')} · ${LV[lv]?.name} · ${TERMS[term]}`, live: true, body: () => { const g = gDoc(lv, term), st = gStats(lv, g), role = S.profile.role;
+    if (!g) return `<div class="panel empty"><b>${T('Pas encore de notes', 'No marks yet')}</b><span>${T('Le titulaire n’a pas encore commencé la saisie.', 'The class teacher has not started entering marks.')}</span></div>`;
+    const sp = S.gPupil && st.rows.find(r => r.s.id === S.gPupil);
+    return `<div class="section"><div class="section-head"><span class="small">${T('Titulaire', 'Class teacher')} : <b>${esc(teacherOf(lv) || g.submittedBy || '—')}</b></span>${gChip(g)}</div>
+      ${g.submittedAt ? `<span class="small muted">${T('Soumis le', 'Submitted on')} ${frDate(g.submittedAt)}${g.validatedBy ? ' · ' + T('vérifié par ', 'checked by ') + esc(g.validatedBy) + ' ' + T('le ', 'on ') + frDate(g.validatedAt) : ''}</span>` : ''}
+      ${st.missing || st.noRemark ? `<span class="small" style="color:var(--warn)">${T(`Il manque ${st.missing} note(s) et ${st.noRemark} appréciation(s).`, `${st.missing} mark(s) and ${st.noRemark} comment(s) are missing.`)}</span>` : ''}</div>
+    ${g.status === 'returned' && g.returnNote ? `<div class="banner red small">${T('Renvoyé', 'Sent back')} : ${esc(g.returnNote)}</div>` : ''}
+    <span class="small muted">${T('Touchez un élève pour voir le détail de ses notes et son appréciation.', 'Tap a pupil to see their marks and comment.')}</span>
+    ${gSummary(lv, g, st, true)}
+    ${sp ? `<div class="panel" style="padding:12px 14px;display:flex;flex-direction:column;gap:6px"><b>${esc(sp.s.name)} · ${sp.avg != null ? fmt20(sp.avg) + '/20 · ' + rankTxt(sp.rank) : ''}</b>
+      <div class="tbl"><table class="tight"><tbody>${st.subs.map(k => { const v = g.marks?.[sp.s.id]?.[k]; return `<tr><td style="white-space:normal;text-align:left">${esc(k)}</td><td class="num"><b style="color:${typeof v === 'number' && v < 10 ? 'var(--stamp)' : 'inherit'}">${typeof v === 'number' ? fmt20(v) : '—'}</b></td></tr>`; }).join('')}</tbody></table></div>
+      <span class="small"><b>${T('Appréciation de l’enseignant', 'Teacher’s comment')}</b> : ${esc(g.remarks?.[sp.s.id] || '—')}</span>
+      ${canCheckGrades(role) ? `<form data-form="g-head" data-id="${lv}" data-s="${term}" data-p="${sp.s.id}"><label class="f">${T('Observation de la directrice', 'Head teacher’s remark')}<input name="rem" value="${esc(g.headRemarks?.[sp.s.id] || '')}"></label><button class="btn sm">${T('Enregistrer l’observation', 'Save remark')}</button></form>` : (g.headRemarks?.[sp.s.id] ? `<span class="small"><b>${T('Observation de la directrice', 'Head teacher’s remark')}</b> : ${esc(g.headRemarks[sp.s.id])}</span>` : '')}</div>` : ''}
+    ${canCheckGrades(role) && g.status === 'submitted' ? `<div class="btns"><button class="btn primary" data-a="g-validate" data-v="${lv}" data-s="${term}">${T('Valider les notes', 'Approve the marks')}</button><button class="btn" data-a="g-return-ask" data-v="${lv}">${T('Renvoyer à l’enseignant', 'Send back to the teacher')}</button></div>
+      ${S.gReturning === lv ? `<form data-form="g-return" data-id="${lv}" data-s="${term}"><label class="f">${T('Ce qu’il faut corriger', 'What needs correcting')}<input name="note" required autofocus></label><button class="btn red">${T('Renvoyer', 'Send back')}</button></form>` : ''}` : ''}
+    ${canCheckGrades(role) && g.status === 'validated' ? `<button class="btn ghost sm" data-a="g-reopen" data-v="${lv}" data-s="${term}">${T('Rouvrir pour correction', 'Reopen for correction')}</button>` : ''}
+    <button class="btn sm" data-a="g-csv" data-v="${lv}" data-s="${term}">${T('Exporter (CSV)', 'Export (CSV)')}</button>`; }};
+}
+function gradesAlertCard() {
+  if (!canCheckGrades()) return ''; const list = Object.values(S.grades).filter(g => g.status === 'submitted'); if (!list.length) return '';
+  return `<div class="section"><h3>${T('Notes à vérifier', 'Marks to check')}</h3><div class="panel rows">${list.map(g => `<button class="row" data-a="g-open" data-v="${g.level}" data-s="${g.term}"><span class="grow"><span class="name">${LV[g.level]?.name} · ${TERMS[g.term]}</span><br><span class="small muted">${esc(g.submittedBy || teacherOf(g.level) || '')} · ${frDate(g.submittedAt)}</span></span>${gChip(g)}</button>`).join('')}</div></div>`;
+}
+async function gWrite(lv, term, patch, msg) {
+  const id = gKey(lv, term), g = gDoc(lv, term);
+  return write(db => g ? db.doc('grades/' + id).update({...patch, updatedAt: nowISO()}) : db.doc('grades/' + id).set({year: YEAR, level: lv, term, subjects: SUBJ_DEFAULT(lv), marks: {}, remarks: {}, headRemarks: {}, status: 'draft', ...patch, updatedAt: nowISO()}), msg);
+}
+
+async function exportCSV(name, rows) { const csv = '\ufeff' + rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n'); try { await saveFile(name, csv, 'text/csv'); } catch { toast(T('Export impossible.', 'Export failed.')); } }
+
 function viewHome() {
   const st = activeStudents(); const nur = st.filter(s => LV[s.level]?.sec === 'nursery').length;
   const d = today(); const done = LEVELS.filter(l => S.att[attKey(l.id, d)]);
@@ -841,10 +1313,14 @@ function viewHome() {
       <div class="kpi"><span class="v">${st.length}</span><span class="l">${T(`élèves (${nur} maternelle, ${st.length - nur} primaire)`, `pupils (${nur} nursery, ${st.length - nur} primary)`)}</span></div>
       <div class="kpi"><span class="v">${tot ? Math.round(pres / tot * 100) + ' %' : '—'}</span><span class="l">${T('présence du jour', 'present today')}</span></div>
       <div class="kpi"><span class="v">${done.length}/9</span><span class="l">${T('appels faits', 'roll calls done')}</span></div>
-      <div class="kpi"><span class="v">${lateN}</span><span class="l">${T('familles en retard de paiement', 'families behind on fees')}</span></div>
+      ${isAdmin() ? `<div class="kpi"><span class="v">${lateN}</span><span class="l">${T('familles en retard de paiement', 'families behind on fees')}</span></div>` : `<div class="kpi"><span class="v">${absenceAlerts().length}</span><span class="l">${T('alertes d’absences', 'absence alerts')}</span></div>`}
     </div>
   </div>
   ${st.length === 0 ? `<div class="panel empty"><b>${T('Aucun élève enregistré', 'No pupils registered yet')}</b><span>${T('Commencez par ajouter les élèves de chaque classe et fixer les frais de scolarité.', 'Start by adding the pupils of each class and setting the school fees.')}</span><div class="btns"><button class="btn primary" data-a="tab" data-v="eleves">${T('Ajouter des élèves', 'Add pupils')}</button><button class="btn" data-a="tab" data-v="reglages">${T('Réglages', 'Settings')}</button></div></div>` : ''}
+  ${canAdmit() ? admissionsCard() : ''}
+  ${gradesAlertCard()}
+  ${S.profile.role === 'direction' ? fundsAlertCard() : ''}
+  ${nextEventsCard(3)}
   ${myClockCard()}
   ${S.profile.role === 'assistant' ? secRecordCard() : ''}
   ${staffTodayCard()}
@@ -853,11 +1329,11 @@ function viewHome() {
       const ab = a ? Object.values(a.marks || {}).filter(m => m === 'A').length : 0;
       return `<button class="row" data-a="open-appel" data-v="${l.id}"><span class="grow"><span class="name">${l.name}</span><br><span class="small muted">${esc(teacherOf(l.id) || T('Titulaire à renseigner', 'Class teacher not set'))} · ${pl(n, 'élève', 'élèves', 'pupil', 'pupils')}</span></span>${a ? (ab ? `<span class="chip red">${pl(ab, 'absent', 'absents', 'absent', 'absent')}</span>` : `<span class="chip green">${T('Fait', 'Done')}</span>`) : `<span class="chip grey">${T('Non fait', 'Not done')}</span>`}</button>`; }).join('')}</div>
   </div>
-  <div class="section"><div class="section-head"><h3>${T('Frais de scolarité', 'School fees')} ${YEAR}</h3><button class="btn ghost sm" data-a="tab" data-v="frais">${T('Détail', 'Details')}</button></div>
+  ${isAdmin() ? `<div class="section"><div class="section-head"><h3>${T('Frais de scolarité', 'School fees')} ${YEAR}</h3><button class="btn ghost sm" data-a="tab" data-v="frais">${T('Détail', 'Details')}</button></div>
     <div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:8px">
       ${feesSet() ? `<div class="section-head"><span class="num"><b>${money(got)}</b> ${T('encaissés', 'collected')}</span><span class="muted small num">${T('sur', 'of')} ${money(exp)}</span></div><div class="bar"><i style="width:${exp ? Math.min(100, got / exp * 100) : 0}%"></i></div>` : `<span class="muted">${T('Les montants des frais ne sont pas encore fixés.', 'Fee amounts have not been set yet.')}</span><button class="btn sm" data-a="tab" data-v="reglages">${T('Fixer les frais', 'Set the fees')}</button>`}
     </div>
-  </div>
+  </div>` : ''}
   ${alerts.length ? `<div class="section"><h3>${T('Alertes d’absences', 'Absence alerts')}</h3><div class="panel rows">${alerts.map(a => `<button class="row" data-a="student" data-v="${a.s.id}"><span class="grow"><span class="name">${esc(a.s.name)}</span><br><span class="small muted">${LV[a.s.level]?.name}</span></span><span class="chip red num">${T(`${a.n} absences ce trimestre`, `${a.n} absences this term`)}</span></button>`).join('')}</div></div>` : ''}
   <div class="section"><div class="section-head"><h3>${T('Dernières annonces', 'Latest announcements')}</h3><button class="btn ghost sm" data-a="compose">${T('Nouvelle annonce', 'New announcement')}</button></div>
     ${ann.length ? `<div class="panel rows">${ann.map(msgRow).join('')}</div>` : `<div class="panel empty">${T('Aucune annonce envoyée cette année.', 'No announcements sent this year.')}</div>`}
@@ -869,7 +1345,69 @@ function absenceAlerts() {
 }
 
 /* ----- attendance ----- */
+/* ----- supervisor: read-only attendance ----- */
+function viewAppelRO() {
+  const lv = S.apLevel || LEVELS[0].id, ds = S.apDate, doc = S.att[attKey(lv, ds)], kids = byLevel(lv), M = MARKS();
+  const chip = m => m === 'A' ? `<span class="chip red">${M.A}</span>` : m === 'R' ? `<span class="chip amber">${M.R}</span>` : m === 'J' ? `<span class="chip blue">${M.J}</span>` : `<span class="chip green">${M.P}</span>`;
+  const sum = l => { const a = S.att[attKey(l.id, ds)]; if (!a) return `<span class="chip grey">${T('Non fait', 'Not done')}</span>`; const v = Object.values(a.marks || {}); const ab = v.filter(m => m === 'A').length, r = v.filter(m => m === 'R').length; return ab || r ? `<span class="chip red">${ab} abs. · ${r} ${T('ret.', 'late')}</span>` : `<span class="chip green">${T('Complet', 'All in')}</span>`; };
+  return `<div class="section"><div class="section-head"><h2>${T('Présences des élèves', 'Pupil attendance')}</h2><span class="chip grey">${T('Lecture seule', 'Read only')}</span></div>
+    <div class="grid2"><label class="f">${T('Date', 'Date')}<input type="date" id="ap-date" value="${ds}" max="${today()}" data-change="ap-date"></label><div class="f" style="justify-content:flex-end"><span class="small muted">${cap(longDay(ds))}</span></div></div></div>
+  <div class="section"><h3>${T('Toutes les classes', 'All classes')}</h3><div class="panel rows">${LEVELS.map(l => `<button class="row" data-a="ap-level" data-v="${l.id}" ${l.id === lv ? 'style="background:var(--carbon-tint)"' : ''}><span class="grow"><span class="name">${l.name}</span><br><span class="small muted">${esc(teacherOf(l.id) || '')} · ${PUPIL_HOURS(l.id).join(' – ')}</span></span>${sum(l)}</button>`).join('')}</div></div>
+  <div class="section"><h3>${LV[lv].name}</h3>${!doc ? `<div class="panel empty">${T('L’appel de cette classe n’a pas encore été fait ce jour-là.', 'The roll call for this class has not been taken that day.')}</div>` : `<div class="panel rows">${kids.map(k => { const m = doc.marks?.[k.id] || 'P'; return `<button class="row" data-a="student" data-v="${k.id}"><span class="grow"><span class="name">${esc(k.name)}</span>${doc.reasons?.[k.id] ? `<br><span class="small muted">${esc(reasonName(doc.reasons[k.id]))}</span>` : ''}</span>${chip(m)}</button>`; }).join('')}</div><span class="small muted">${T('Appel enregistré par', 'Roll call by')} ${esc(doc.by || '')} ${doc.savedAt ? T('à ', 'at ') + hhmm(doc.savedAt) : ''}</span>`}</div>`;
+}
+/* ----- building works ----- */
+const canSeeWorks = (r = S.profile?.role) => ['president', 'vicepresident', 'direction', 'assistant', 'supervisor'].includes(r);
+const canEditWorks = (r = S.profile?.role) => ['president', 'vicepresident', 'direction', 'supervisor'].includes(r);
+const canInspect = (r = S.profile?.role) => ['president', 'vicepresident', 'supervisor'].includes(r);
+const WORK_ST = () => ({planned: [T('Prévu', 'Planned'), 'grey'], ongoing: [T('En cours', 'In progress'), 'blue'], stopped: [T('Arrêté', 'Stopped'), 'red'], done: [T('Terminé', 'Completed'), 'green']});
+const VERDICT = () => ({ok: [T('Conforme', 'Satisfactory'), 'green'], reserve: [T('Avec réserves', 'With reservations'), 'amber'], ko: [T('Non conforme', 'Unsatisfactory'), 'red']});
+const checksOf = id => S.workchecks.filter(c => c.workId === id).sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.at || '').localeCompare(a.at || ''));
+function viewTravaux() {
+  const list = S.works.slice().sort((a, b) => (a.status === 'done') - (b.status === 'done') || (b.start || '').localeCompare(a.start || ''));
+  return `<div class="section"><div class="section-head"><h2>${T('Travaux', 'Building works')}</h2>${canEditWorks() ? `<button class="btn primary sm" data-a="work-add">${T('Nouveau chantier', 'New works')}</button>` : ''}</div>
+    <span class="small muted">${T('Chaque chantier est suivi par le surveillant général et économe : visites de contrôle, avancement, observations et photos.', 'Each works project is followed by the senior supervisor: inspection visits, progress, remarks and photos.')}</span></div>
+  ${list.length ? `<div class="panel rows">${list.map(w => { const c = checksOf(w.id)[0], st = WORK_ST()[w.status] || WORK_ST().planned; return `<button class="row" data-a="work-open" data-v="${w.id}" style="align-items:flex-start"><span class="grow"><span class="name">${esc(w.title)}</span><br><span class="small muted">${esc(w.contractor || T('Entreprise non indiquée', 'No contractor set'))}${w.start ? ' · ' + frDate(w.start) : ''}${w.end ? ' → ' + frDate(w.end) : ''}</span><br><span class="small">${c ? T('Dernier contrôle', 'Last inspection') + ' : ' + frDate(c.date) + ' · ' + (c.progress ?? 0) + ' %' : T('Pas encore contrôlé', 'Not inspected yet')}</span></span><span class="chip ${st[1]}">${st[0]}</span></button>`; }).join('')}</div>`
+    : `<div class="panel empty"><b>${T('Aucun chantier en cours', 'No works at the moment')}</b><span>${T('Quand des travaux ont lieu à l’école, créez le chantier pour en suivre les contrôles.', 'When works take place at the school, create the project to follow the inspections.')}</span></div>`}`;
+}
+function sheetWork(id) {
+  return {title: () => T('Chantier', 'Works'), live: true, body: () => { const w = S.works.find(x => x.id === id); if (!w) return `<div class="empty">${T('Chantier introuvable.', 'Not found.')}</div>`;
+    const cs = checksOf(w.id), st = WORK_ST()[w.status] || WORK_ST().planned, last = cs[0];
+    return `<div class="section"><div class="section-head"><h3>${esc(w.title)}</h3><span class="chip ${st[1]}">${st[0]}</span></div>
+      <span class="small">${esc(w.place || '')}${w.place ? ' · ' : ''}${esc(w.contractor || '')}</span>
+      <span class="small muted">${w.start ? T('Début', 'Start') + ' ' + frDate(w.start) : ''}${w.end ? ' · ' + T('fin prévue', 'planned end') + ' ' + frDate(w.end) : ''}${w.budget ? ' · ' + T('budget', 'budget') + ' ' + money(w.budget) : ''}</span>
+      ${w.description ? `<div class="panel" style="padding:12px 14px;white-space:pre-wrap">${esc(w.description)}</div>` : ''}
+      <div class="bar"><i style="width:${last?.progress || 0}%"></i></div><span class="small muted">${T('Avancement constaté', 'Observed progress')} : ${last?.progress || 0} %</span></div>
+    <div class="btns">${canInspect() ? `<button class="btn red" data-a="check-add" data-v="${w.id}">${T('Enregistrer un contrôle', 'Record an inspection')}</button>` : ''}${canEditWorks() ? `<button class="btn" data-a="work-edit" data-v="${w.id}">${T('Modifier le chantier', 'Edit')}</button>` : ''}</div>
+    <div class="section"><h3>${T('Contrôles', 'Inspections')} (${cs.length})</h3>${cs.length ? `<div class="panel rows">${cs.map(c => { const v = VERDICT()[c.verdict] || VERDICT().ok; return `<div class="row" style="flex-wrap:wrap;align-items:flex-start"><span class="grow"><span class="name">${cap(longDay(c.date))}</span><br><span class="small muted">${esc(c.by || '')} · ${c.progress ?? 0} %</span></span><span class="chip ${v[1]}">${v[0]}</span>${c.note ? `<span class="small" style="flex-basis:100%;white-space:pre-wrap">${esc(c.note)}</span>` : ''}${c.photo ? `<img src="${c.photo}" alt="${T('Photo du chantier', 'Site photo')}" style="flex-basis:100%;max-width:100%;border-radius:10px;margin-top:6px">` : ''}</div>`; }).join('')}</div>` : `<div class="panel empty">${T('Aucun contrôle enregistré.', 'No inspections recorded.')}</div>`}</div>`; }};
+}
+function sheetWorkEdit(id) {
+  const w = id ? S.works.find(x => x.id === id) : null, v = w || {status: 'planned', start: today()};
+  return {title: () => w ? T('Modifier le chantier', 'Edit works') : T('Nouveau chantier', 'New works'), body: () => `<form data-form="work" data-id="${w ? w.id : ''}">
+    <label class="f">${T('Intitulé des travaux', 'Works title')}<input id="wk-title" name="title" required value="${esc(v.title || '')}" placeholder="${T('ex. Réfection de la toiture du bloc B', 'e.g. Repair of block B roof')}"></label>
+    <label class="f">${T('Description', 'Description')}<textarea id="wk-desc" name="description" rows="3">${esc(v.description || '')}</textarea></label>
+    <div class="grid2"><label class="f">${T('Lieu dans l’école', 'Place in the school')}<input id="wk-place" name="place" value="${esc(v.place || '')}"></label><label class="f">${T('Entreprise ou artisan', 'Contractor')}<input id="wk-contr" name="contractor" value="${esc(v.contractor || '')}"></label></div>
+    <div class="grid2"><label class="f">${T('Début', 'Start')}<input id="wk-start" name="start" type="date" value="${v.start || ''}"></label><label class="f">${T('Fin prévue', 'Planned end')}<input id="wk-end" name="end" type="date" value="${v.end || ''}"></label></div>
+    <div class="grid2"><label class="f">${T('Budget (F)', 'Budget (F)')}<span class="hint">${T('facultatif', 'optional')}</span><input id="wk-budget" name="budget" inputmode="numeric" value="${v.budget || ''}"></label><label class="f">${T('État', 'Status')}<select id="wk-status" name="status">${Object.entries(WORK_ST()).map(([k, c]) => `<option value="${k}" ${v.status === k ? 'selected' : ''}>${c[0]}</option>`).join('')}</select></label></div>
+    <button class="btn primary">${T('Enregistrer', 'Save')}</button></form>`};
+}
+function sheetCheck(wid) {
+  const w = S.works.find(x => x.id === wid), last = checksOf(wid)[0];
+  return {title: () => T('Contrôle de chantier', 'Inspection'), body: () => `<span class="small muted">${esc(w?.title || '')}</span>
+    <form data-form="check" data-id="${wid}">
+      <div class="grid2"><label class="f">${T('Date de la visite', 'Visit date')}<input id="ck-date" name="date" type="date" value="${today()}" max="${today()}"></label><label class="f">${T('Avancement (%)', 'Progress (%)')}<input id="ck-prog" name="progress" type="number" min="0" max="100" value="${last?.progress || 0}"></label></div>
+      <label class="f">${T('Appréciation', 'Assessment')}<select id="ck-verdict" name="verdict">${Object.entries(VERDICT()).map(([k, c]) => `<option value="${k}">${c[0]}</option>`).join('')}</select></label>
+      <label class="f">${T('Observations', 'Remarks')}<span class="hint">${T('qualité, sécurité des élèves, respect des délais, matériaux…', 'quality, pupils’ safety, deadlines, materials…')}</span><textarea id="ck-note" name="note" rows="4"></textarea></label>
+      <label class="f">${T('Photo', 'Photo')}<span class="hint">${T('facultatif', 'optional')}</span><input id="ck-photo" type="file" accept="image/*" capture="environment"></label>
+      <label class="f">${T('État du chantier après la visite', 'Works status after the visit')}<select id="ck-status" name="status">${Object.entries(WORK_ST()).map(([k, c]) => `<option value="${k}" ${w?.status === k ? 'selected' : ''}>${c[0]}</option>`).join('')}</select></label>
+      <button class="btn red">${T('Enregistrer le contrôle', 'Save the inspection')}</button></form>`};
+}
+function readSitePhoto(file) {
+  return new Promise((res, rej) => { const fr = new FileReader(); fr.onerror = rej; fr.onload = () => { const im = new Image(); im.onerror = rej; im.onload = () => {
+    const k = Math.min(1, 720 / Math.max(im.width, im.height)), c = document.createElement('canvas'); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+    c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); res(c.toDataURL('image/jpeg', 0.7)); }; im.src = fr.result; }; fr.readAsDataURL(file); });
+}
 function viewAppel() {
+  if (S.profile.role === 'supervisor') return viewAppelRO();
   const p = S.profile, M = MARKS();
   const lv = p.role === 'teacher' ? p.level : (S.apLevel || LEVELS[0].id);
   const ds = S.apDate, key = attKey(lv, ds), doc = S.att[key];
@@ -882,7 +1420,7 @@ function viewAppel() {
   const cnt = {P:0, A:0, R:0, J:0}; kids.forEach(k => cnt[S.draft.marks[k.id]]++);
   const future = ds > today();
   const letters = EN() ? {P:'P', A:'A', R:'L', J:'E'} : {P:'P', A:'A', R:'R', J:'J'};
-  return `${p.role === 'teacher' ? myClockCard() : ''}
+  return `${p.role === 'teacher' ? myClockCard() + (upcoming(1).length ? `<button class="row panel" data-a="tab" data-v="calendrier" style="align-items:flex-start"><span class="chip blue">${T('Prochain', 'Next')}</span><span class="grow small"><b>${cap(evWhen(upcoming(1)[0]))}</b> · ${esc(evTitle(upcoming(1)[0]))}</span></button>` : '') : ''}
   <div class="section"><div class="section-head"><h2>${p.role === 'teacher' ? T('Appel de ', 'Roll call · ') + LV[lv].name : T('Présences', 'Attendance')}</h2>${doc ? `<span class="chip green">${T('Enregistré', 'Saved')} ${doc.savedAt ? T('à ', 'at ') + hhmm(doc.savedAt) : ''}</span>` : `<span class="chip grey">${T('Pas encore fait', 'Not done yet')}</span>`}</div>
     ${p.role !== 'teacher' ? `<div class="seg" role="group" aria-label="${T('Classe', 'Class')}">${LEVELS.map(l => `<button data-a="ap-level" data-v="${l.id}" aria-pressed="${l.id === lv}">${l.name}</button>`).join('')}</div>` : ''}
     <div class="grid2"><label class="f">${T('Date', 'Date')}<input type="date" id="ap-date" value="${ds}" max="${today()}" data-change="ap-date"></label>
@@ -933,10 +1471,15 @@ function viewFrais() {
   const rows = LEVELS.map(l => { const fs = byLevel(l.id).map(feeStatus); return {l, n: fs.length, exp: fs.reduce((a, f) => a + f.total, 0), got: fs.reduce((a, f) => a + f.paid, 0), late: fs.filter(f => f.late > 0).length}; });
   const E = rows.reduce((a, r) => a + r.exp, 0), G = rows.reduce((a, r) => a + r.got, 0);
   const termGot = S.payments.filter(p => !p.cancelled && termOf(p.date) === term).reduce((a, p) => a + (+p.amount || 0), 0);
+  const outY = S.expenses.filter(e => !e.cancelled).reduce((t, e) => t + (+e.amount || 0), 0);
   return `
-  <div class="section"><h2>${T('Frais de scolarité', 'School fees')}</h2>
+  ${fundsAlertCard()}${canSeeExpenses() ? expReqAlertCard() : ''}
+  ${collecteCard()}
+  <div class="section"><div class="section-head"><h2>${T('Encaissements et décaissements', 'Money in and out')}</h2><button class="btn ghost sm" data-a="tab" data-v="decaisse">${T('Décaissements', 'Disbursements')}</button></div>
     <div class="kpis">
-      <div class="kpi"><span class="v">${money(G)}</span><span class="l">${T('encaissés sur l’année', 'collected this year')}</span></div>
+      <div class="kpi"><span class="v">${money(G)}</span><span class="l">${T('encaissés sur l’année (application)', 'collected this year (app)')}</span></div>
+      <div class="kpi"><span class="v">${money(outY)}</span><span class="l">${T('décaissés sur l’année', 'paid out this year')}</span></div>
+      <div class="kpi"><span class="v" style="color:${G - outY < 0 ? 'var(--stamp)' : 'inherit'}">${money(G - outY)}</span><span class="l">${T('solde : encaissé moins décaissé', 'balance: in minus out')}</span></div>
       <div class="kpi"><span class="v">${money(Math.max(0, E - G))}</span><span class="l">${T('restant à percevoir', 'still to collect')}</span></div>
       <div class="kpi"><span class="v">${money(E)}</span><span class="l">${T('attendus pour l’année', 'expected for the year')}</span></div>
       <div class="kpi"><span class="v">${frDate(today() <= due1() ? due1() : due2())}</span><span class="l">${T('prochaine date limite de paiement', 'next payment deadline')}</span></div>
@@ -945,8 +1488,80 @@ function viewFrais() {
   <div class="section"><h3>${T('Par classe', 'By class')}</h3><div class="panel tbl"><table><thead><tr><th>${T('Classe', 'Class')}</th><th>${T('Élèves', 'Pupils')}</th><th>${T('Encaissé', 'Collected')}</th><th>${T('Taux', 'Rate')}</th><th>${T('En retard', 'Behind')}</th></tr></thead><tbody>
     ${rows.map(r => `<tr><td>${r.l.name}</td><td>${r.n}</td><td>${money(r.got)}</td><td>${r.exp ? Math.round(r.got / r.exp * 100) + ' %' : '—'}</td><td>${r.late ? `<span class="chip red">${r.late}</span>` : '0'}</td></tr>`).join('')}
   </tbody></table></div></div>
-  <div class="btns"><button class="btn primary" data-a="tab" data-v="impayes">${T('Voir les impayés', 'See arrears')}</button><button class="btn" data-a="tab" data-v="recus">${T('Tous les reçus', 'All receipts')}</button><button class="btn" data-a="tab" data-v="encaisser">${T('Encaisser un paiement', 'Record a payment')}</button></div>
+  <div class="btns"><button class="btn primary" data-a="tab" data-v="impayes">${T('Voir les impayés', 'See arrears')}</button><button class="btn" data-a="tab" data-v="recus">${T('Tous les reçus', 'All receipts')}</button></div>
   ${paymentsList(6)}`;
+}
+/* ----- 1st installment collection (chairman, vice-chairman) ----- */
+function collecteRows(force) {
+  const snap = S.finance?.collect1 || null, mode = force || S.colMode || (snap ? 'releve' : 'app');
+  const rows = LEVELS.map(l => {
+    if (mode === 'releve' && snap) { const r = snap.rows?.[l.id] || {}; const n = +r.n || 0, exp = r.exp != null ? +r.exp : n * firstInst(feesOf(l.id)), got = +r.got || 0; return {l, n, exp, got, out: Math.max(0, exp - got)}; }
+    const kids = byLevel(l.id).filter(k => !k.demo), per = firstInst(feesOf(l.id));
+    const got = kids.reduce((t, k) => t + Math.min(per, S.payments.filter(p => p.studentId === k.id && !p.cancelled && OBJ[p.object]?.fees).reduce((a, p) => a + (+p.amount || 0), 0)), 0);
+    return {l, n: kids.length, exp: kids.length * per, got, out: Math.max(0, kids.length * per - got)};
+  });
+  const tot = rows.reduce((t, r) => ({n: t.n + r.n, exp: t.exp + r.exp, got: t.got + r.got, out: t.out + r.out}), {n: 0, exp: 0, got: 0, out: 0});
+  return {rows, tot, mode, snap};
+}
+const nf = n => money(n).replace(' FCFA', '');
+const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
+function collecteChart(rows) {
+  const W = 360, rowH = 26, L = 78, R = 44, top = 8, H = top + rows.length * rowH + 22, max = Math.max(1, ...rows.map(r => r.exp));
+  const X = v => L + (W - L - R) * v / max;
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${T('Reçu et reste à percevoir par classe', 'Received and outstanding by class')}">
+    ${rows.map((r, i) => { const y = top + i * rowH; return `<text x="${L - 6}" y="${y + 15}" text-anchor="end" font-size="10.5" fill="var(--ink)">${r.l.name}</text>
+      <rect x="${L}" y="${y + 4}" width="${Math.max(0, X(r.got) - L)}" height="15" rx="3" fill="var(--good)"/>
+      <rect x="${X(r.got)}" y="${y + 4}" width="${Math.max(0, X(r.exp) - X(r.got))}" height="15" rx="3" fill="var(--stamp)" opacity=".75"/>
+      <text x="${X(r.exp) + 4}" y="${y + 15}" font-size="10.5" font-weight="700" fill="var(--ink)">${pct(r.got, r.exp)}%</text>`; }).join('')}
+  </svg><div class="legend" style="padding:4px 6px 0"><span style="color:var(--good)"><b>■</b> ${T('Reçu', 'Received')}</span><span style="color:var(--stamp)"><b>■</b> ${T('Reste à percevoir', 'Still out')}</span></div>`;
+}
+function collecteCard() {
+  const {rows, tot, mode, snap} = collecteRows();
+  return `<div class="section"><div class="section-head"><h2>${T('Collecte de la 1re tranche', '1st installment collection')}</h2><button class="btn ghost sm" data-a="tab" data-v="collecte">${T('Détail', 'Details')}</button></div>
+    <span class="small muted">${mode === 'releve' ? T(`Relevé du ${frDate(snap.date)}`, `Statement of ${frDate(snap.date)}`) : T('Selon les paiements enregistrés dans l’application', 'From payments recorded in the app')} · ${T('date limite', 'deadline')} ${frDate(due1())}</span>
+    <div class="kpis"><div class="kpi"><span class="v">${money(tot.got)}</span><span class="l">${T('reçus sur', 'received of')} ${money(tot.exp)} (${pct(tot.got, tot.exp)} %)</span></div>
+      <div class="kpi"><span class="v" style="color:var(--stamp)">${money(tot.out)}</span><span class="l">${T('reste à percevoir', 'still outstanding')} · ${tot.n} ${T('élèves', 'pupils')}</span></div></div>
+    <div class="bar"><i style="width:${Math.min(100, pct(tot.got, tot.exp))}%;background:var(--good)"></i></div></div>`;
+}
+function compareBlock() {
+  const A = collecteRows('releve'), B = collecteRows('app'); if (!A.snap) return '';
+  const ok = (a, b) => a === b;
+  const diff = (a, b) => b - a === 0 ? '<span style="color:var(--good)">✓</span>' : `<b style="color:var(--stamp)">${b - a > 0 ? '+' : ''}${nf(b - a)}</b>`;
+  const allOk = A.rows.every((r, i) => ok(r.n, B.rows[i].n) && ok(r.got, B.rows[i].got));
+  return `<div class="section"><h3>${T('Contrôle : relevé et application', 'Check: statement vs app')}</h3>
+    <div class="banner ${allOk ? 'info' : 'warn'} small">${allOk ? T('Les données de l’application correspondent au relevé.', 'App data matches the statement.') : T(`La secrétaire comptable a enregistré ${B.tot.n} élèves sur ${A.tot.n} et ${money(B.tot.got)} sur ${money(A.tot.got)}. Les écarts disparaîtront quand tous les élèves et paiements seront saisis.`, `The secretary-bursar has recorded ${B.tot.n} of ${A.tot.n} pupils and ${money(B.tot.got)} of ${money(A.tot.got)}. Gaps will close once all pupils and payments are entered.`)}</div>
+    <div class="bar"><i style="width:${Math.min(100, pct(B.tot.n, A.tot.n))}%"></i></div><span class="small muted">${T('Élèves saisis', 'Pupils entered')} : ${B.tot.n} / ${A.tot.n} (${pct(B.tot.n, A.tot.n)} %)</span>
+    ${[['n', T('Élèves inscrits', 'Pupils enrolled'), v => v], ['got', T('Montants reçus (F)', 'Amounts received (F)'), nf]].map(([k, title, f]) => `<h3>${title}</h3><div class="panel tbl"><table class="tight"><thead><tr><th>${T('Classe', 'Class')}</th><th>${T('Relevé', 'Statement')}</th><th>${T('Application', 'App')}</th><th>${T('Écart', 'Gap')}</th></tr></thead><tbody>
+      ${A.rows.map((r, i) => { const a = r[k], b = B.rows[i][k], d = b - a; return `<tr><td>${r.l.name.replace('Pre-Nursery', 'Pre-N.')}</td><td>${f(a)}</td><td>${f(b)}</td><td>${d === 0 ? '<span style="color:var(--good)">✓</span>' : `<b style="color:var(--stamp)">${d > 0 ? '+' : '−'}${f(Math.abs(d))}</b>`}</td></tr>`; }).join('')}
+      <tr><td><b>Total</b></td><td><b>${f(A.tot[k])}</b></td><td><b>${f(B.tot[k])}</b></td><td><b>${B.tot[k] - A.tot[k] === 0 ? '✓' : (B.tot[k] - A.tot[k] > 0 ? '+' : '−') + f(Math.abs(B.tot[k] - A.tot[k]))}</b></td></tr>
+    </tbody></table></div>`).join('')}
+    <span class="small muted">${T('« Reçu appli » compte, pour chaque élève, les paiements de frais enregistrés jusqu’au montant de la 1re tranche.', '“Recvd app” counts, for each pupil, fee payments recorded up to the 1st installment amount.')}</span></div>`;
+}
+function viewCollecte() {
+  const {rows, tot, mode, snap} = collecteRows();
+  return `<div class="section"><div class="section-head"><h2>${T('Collecte de la 1re tranche', '1st installment collection')} ${YEAR}</h2><button class="btn primary sm" data-a="col-edit">${T('Saisir un relevé', 'Enter a statement')}</button></div>
+    <div class="seg" role="group"><button data-a="col-mode" data-v="releve" aria-pressed="${mode === 'releve'}" ${snap ? '' : 'disabled'}>${T('Relevé', 'Statement')}${snap ? ' ' + frDate(snap.date) : ''}</button><button data-a="col-mode" data-v="app" aria-pressed="${mode === 'app'}">${T('Selon l’application', 'From the app')}</button></div>
+    <span class="small muted">${T(`Montant attendu par élève : 55 000 F en maternelle et en Class 1 à 5, 70 000 F en Class 6. Date limite : ${frDate(due1())}.`, `Expected per pupil: 55,000 F in nursery and Class 1 to 5, 70,000 F in Class 6. Deadline: ${frDate(due1())}.`)}</span></div>
+  <div class="kpis"><div class="kpi"><span class="v">${tot.n}</span><span class="l">${T('élèves', 'pupils')}</span></div><div class="kpi"><span class="v">${pct(tot.got, tot.exp)} %</span><span class="l">${T('taux de recouvrement', 'collection rate')}</span></div>
+    <div class="kpi"><span class="v">${money(tot.got)}</span><span class="l">${T('reçus', 'received')} / ${money(tot.exp)} ${T('attendus', 'expected')}</span></div><div class="kpi"><span class="v" style="color:var(--stamp)">${money(tot.out)}</span><span class="l">${T('reste à percevoir', 'still outstanding')}</span></div></div>
+  <div class="section"><h3>${T('Par classe', 'By class')}</h3><div class="panel chart" style="padding:10px">${collecteChart(rows)}</div>
+  <div class="panel tbl"><table><thead><tr><th>${T('Classe', 'Class')}</th><th>${T('Élèves', 'Pupils')}</th><th>${T('Attendu', 'Expected')} (F)</th><th>${T('Reçu', 'Received')} (F)</th><th>${T('Reste', 'Still out')} (F)</th><th>%</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td>${r.l.name.replace('Pre-Nursery', 'Pre-N.')}</td><td>${r.n}</td><td>${nf(r.exp)}</td><td>${nf(r.got)}</td><td>${nf(r.out)}</td><td>${pct(r.got, r.exp)} %</td></tr>`).join('')}
+    <tr><td><b>Total</b></td><td><b>${tot.n}</b></td><td><b>${nf(tot.exp)}</b></td><td><b>${nf(tot.got)}</b></td><td><b>${nf(tot.out)}</b></td><td><b>${pct(tot.got, tot.exp)} %</b></td></tr>
+  </tbody></table></div>
+  <button class="btn sm" data-a="col-csv">${T('Exporter (CSV)', 'Export (CSV)')}</button></div>
+  ${compareBlock()}
+  <p class="small muted" style="margin:0">${T('Le relevé reprend les chiffres comptés par l’école. « Selon l’application » calcule à partir des élèves inscrits et des paiements saisis : les deux se rejoignent quand tous les élèves et paiements sont enregistrés.', 'The statement uses the figures counted by the school. “From the app” is computed from enrolled pupils and recorded payments: both match once all pupils and payments are entered.')}</p>`;
+}
+function sheetColEdit() {
+  const snap = S.finance?.collect1 || {}, r = snap.rows || {};
+  return {title: () => T('Relevé de la 1re tranche', '1st installment statement'), body: () => `<form data-form="col">
+    <label class="f">${T('Date du relevé', 'Statement date')}<input id="col-date" name="date" type="date" value="${snap.date || today()}" max="${today()}"></label>
+    <div class="panel tbl"><table><thead><tr><th>${T('Classe', 'Class')}</th><th>${T('Élèves', 'Pupils')}</th><th>${T('Reçu (F)', 'Received (F)')}</th></tr></thead><tbody>
+    ${LEVELS.map(l => `<tr><td>${l.name}<br><span class="small muted">${money(firstInst(feesOf(l.id)))} / ${T('élève', 'pupil')}</span></td><td><input id="col-n-${l.id}" name="n-${l.id}" inputmode="numeric" value="${r[l.id]?.n ?? ''}" style="min-width:64px;text-align:right"></td><td><input id="col-g-${l.id}" name="g-${l.id}" inputmode="numeric" value="${r[l.id]?.got ?? ''}" style="min-width:110px;text-align:right"></td></tr>`).join('')}
+    </tbody></table></div>
+    <span class="small muted">${T('Le montant attendu est calculé : nombre d’élèves × montant de la 1re tranche de la classe.', 'Expected amount is computed: pupils × the class’s 1st installment.')}</span>
+    <button class="btn primary">${T('Enregistrer le relevé', 'Save the statement')}</button></form>`};
 }
 function paymentsList(n) {
   const ps = S.payments.slice(0, n);
@@ -996,7 +1611,7 @@ async function remind(ids) {
   const at = nowISO();
   await write(async db => {
     for (const id of ids) { const s = student(id); if (!s) continue; const f = feeStatus(s);
-      await db.collection('messages').doc('rem_' + today() + '_' + id).set({year: YEAR, kind: 'reminder', studentId: id, phoneKey: digits(s.parentPhone), level: s.level, at, readBy: {}, from: S.profile.name || 'Bursar',
+      await db.collection('messages').doc('rem_' + today() + '_' + id).set({year: YEAR, kind: 'reminder', studentId: id, phoneKey: digits(s.parentPhone), level: s.level, at, readBy: {}, from: S.profile.name || T('Secrétaire comptable', 'Secretary-bursar'),
         title: 'Rappel de paiement',
         body: `Les frais de scolarité de ${s.name} (${LV[s.level].name}) présentent un montant échu non réglé de ${money(f.late)}. Solde de l’année : ${money(f.balance)}. Merci de passer au guichet de l’école ou de payer par Orange Money / MTN Mobile Money.`,
         en: {title: 'Fee reminder', body: `The school fees for ${s.name} (${LV[s.level].name}) have an unpaid amount due of ${money(f.late)}. Balance for the year: ${money(f.balance)}. Please pay at the school office or by Orange Money / MTN Mobile Money.`}}); }
@@ -1056,6 +1671,7 @@ function viewEnfant() {
   <div style="display:flex;gap:14px;align-items:center">${photoBox(k, 64)}<div class="section" style="flex:1;min-width:0"><div class="section-head"><h2>${esc(k.name)}</h2><span class="chip blue">${LV[k.level]?.name}</span></div>
     <span class="small muted">${T('Enseignant titulaire', 'Class teacher')} : ${esc(teacherOf(k.level) || T('à renseigner par l’école', 'not set yet'))}</span><span class="small muted">${T('Horaires', 'School hours')} : ${PUPIL_HOURS(k.level).join(' – ')}</span></div></div>
   <button class="btn" data-a="card" data-v="${k.id}">${ICON.qr} ${T('Carte d’élève à présenter', 'Pupil’s card to show')}</button>
+  ${nextEventsCard(2)}
   <div class="section"><h3>${T('Présences', 'Attendance')} · ${TERMS[term]}</h3>
     <div class="kpis"><div class="kpi"><span class="v">${c.days ? Math.round((c.P + c.R) / c.days * 100) + ' %' : '—'}</span><span class="l">${T('présence sur ', 'present over ')}${pl(c.days, 'jour', 'jours', 'day', 'days')}</span></div>
     <div class="kpi"><span class="v" style="color:${c.A ? 'var(--stamp)' : 'inherit'}">${c.A}</span><span class="l">${T(`absence${c.A > 1 ? 's' : ''} · ${c.R} retard${c.R > 1 ? 's' : ''} · ${c.J} justifiée${c.J > 1 ? 's' : ''}`, `absence${c.A === 1 ? '' : 's'} · ${c.R} late · ${c.J} excused`)}</span></div></div>
@@ -1083,7 +1699,7 @@ function viewEleves() {
   <div class="section"><div class="section-head"><h2>${T('Élèves', 'Pupils')}</h2><span class="btns">${canManageCards() && f !== 'all' && list.length ? `<button class="btn sm" data-a="class-cards" data-v="${f}">${T('Cartes de la classe', 'Class cards')}</button>` : ''}${canAdd ? `<button class="btn primary sm" data-a="add-student" data-v="${f === 'all' ? '' : f}">${T('Ajouter', 'Add')}</button>` : ''}</span></div>
     ${!isT ? `<div class="seg" role="group" aria-label="${T('Classe', 'Class')}"><button data-a="filter" data-v="all" aria-pressed="${f === 'all'}">${T('Toutes', 'All')} (${activeStudents().length})</button>${LEVELS.map(l => `<button data-a="filter" data-v="${l.id}" aria-pressed="${l.id === f}">${l.name} (${byLevel(l.id).length})</button>`).join('')}</div>` : `<span class="muted small">${LV[f].name} · ${pl(list.length, 'élève', 'élèves', 'pupil', 'pupils')}</span>`}
   </div>
-  ${list.length ? `<div class="panel rows">${list.map(s => { const c = attCounts(s.id, termOf(today())); return `<button class="row" data-a="student" data-v="${s.id}"><span class="grow"><span class="name">${esc(s.name)}${s.demo ? ` <span class="chip grey">${T('exemple', 'sample')}</span>` : ''}</span><br><span class="small muted">${f === 'all' ? LV[s.level]?.name + ' · ' : ''}${esc(s.parentName || T('Parent non renseigné', 'No parent on record'))} · ${esc(s.parentPhone || '')}</span></span>${c.A ? `<span class="chip red num">${c.A} abs.</span>` : ''}</button>`; }).join('')}</div>`
+  ${list.length ? `<div class="panel rows">${list.map(s => { const c = attCounts(s.id, termOf(today())); return `<button class="row" data-a="student" data-v="${s.id}"><span class="grow"><span class="name">${esc(s.name)}${s.demo ? ` <span class="chip grey">${T('exemple', 'sample')}</span>` : ''} ${admChip(s)}</span><br><span class="small muted">${f === 'all' ? LV[s.level]?.name + ' · ' : ''}${esc(s.parentName || T('Parent non renseigné', 'No parent on record'))} · ${esc(s.parentPhone || '')}</span></span>${c.A ? `<span class="chip red num">${c.A} abs.</span>` : ''}</button>`; }).join('')}</div>`
   : `<div class="panel empty"><b>${T('Aucun élève', 'No pupils')}${f !== 'all' ? T(' dans ', ' in ') + LV[f].name : ''}</b>${canAdd ? `<span>${T('Ajoutez-les un par un, ou collez la liste complète de la classe.', 'Add them one by one, or paste the whole class list.')}</span><button class="btn primary" data-a="add-student" data-v="${f === 'all' ? '' : f}">${T('Ajouter des élèves', 'Add pupils')}</button>` : ''}</div>`}`;
 }
 
@@ -1098,7 +1714,55 @@ function feeBreakdown(lv) {
     <tr><td class="small muted">${T('Date limite', 'Deadline')}</td><td class="small muted">${frDate(due1())}</td><td class="small muted">${frDate(due2())}</td><td></td></tr>
   </tbody></table></div>`;
 }
+/* ----- calendar of activities ----- */
+const CAL_SEED = [{"id": "cal_01", "date": "2026-09-07", "end": "", "cat": "school", "en": "School resumption for the academic year 2026/2027 – effective take-off of classes", "fr": "Rentrée scolaire 2026/2027 – début effectif des cours"}, {"id": "cal_02", "date": "2026-10-05", "end": "", "cat": "celebration", "en": "International Teachers’ Day celebration", "fr": "Journée internationale des enseignants"}, {"id": "cal_03", "date": "2026-10-09", "end": "", "cat": "celebration", "en": "National Day for the promotion and making of didactic materials with salvage materials", "fr": "Journée nationale de promotion et de fabrication du matériel didactique avec des matériaux de récupération"}, {"id": "cal_04", "date": "2026-10-09", "end": "", "cat": "celebration", "en": "World Counselling Day", "fr": "Journée mondiale de l’orientation"}, {"id": "cal_05", "date": "2026-10-15", "end": "", "cat": "celebration", "en": "World Hand Washing Day", "fr": "Journée mondiale du lavage des mains"}, {"id": "cal_06", "date": "2026-10-22", "end": "", "cat": "exam", "en": "1st Monthly Test of the academic year", "fr": "1re évaluation mensuelle de l’année"}, {"id": "cal_07", "date": "2026-10-28", "end": "", "cat": "meeting", "en": "Proposed date for the 1st Parents–Teachers meeting", "fr": "Date proposée pour la 1re réunion parents–enseignants"}, {"id": "cal_08", "date": "2026-11-17", "end": "", "cat": "school", "en": "Submission of 1st Term examination questions", "fr": "Remise des sujets d’examen du 1er trimestre"}, {"id": "cal_09", "date": "2026-11-24", "end": "", "cat": "exam", "en": "Beginning of Nursery exams (1st Term)", "fr": "Début des examens de la maternelle (1er trimestre)"}, {"id": "cal_10", "date": "2026-11-27", "end": "", "cat": "school", "en": "End of 1st Term syllabus coverage", "fr": "Fin du programme du 1er trimestre"}, {"id": "cal_11", "date": "2026-12-01", "end": "", "cat": "exam", "en": "Beginning of Primary exams (1st Term)", "fr": "Début des examens du primaire (1er trimestre)"}, {"id": "cal_12", "date": "2026-12-16", "end": "", "cat": "holiday", "en": "Christmas party – closing of 1st Term for the break", "fr": "Fête de Noël – fin du 1er trimestre, début des congés"}, {"id": "cal_13", "date": "2027-01-04", "end": "", "cat": "school", "en": "Re-opening day for the 2nd Term", "fr": "Rentrée du 2e trimestre"}, {"id": "cal_14", "date": "2027-01-25", "end": "2027-01-29", "cat": "celebration", "en": "National Bilingualism Week", "fr": "Semaine nationale du bilinguisme"}, {"id": "cal_15", "date": "2027-02-03", "end": "2027-02-11", "cat": "celebration", "en": "Youth Week activities", "fr": "Activités de la Semaine de la jeunesse"}, {"id": "cal_16", "date": "2027-02-05", "end": "", "cat": "celebration", "en": "Bilingualism Day celebration", "fr": "Célébration de la Journée du bilinguisme"}, {"id": "cal_17", "date": "2027-02-11", "end": "", "cat": "celebration", "en": "National Youth Day celebration", "fr": "Fête nationale de la jeunesse"}, {"id": "cal_18", "date": "2027-02-12", "end": "", "cat": "event", "en": "Proposed date for the excursion", "fr": "Date proposée pour l’excursion"}, {"id": "cal_19", "date": "2027-02-19", "end": "", "cat": "exam", "en": "3rd Monthly Test", "fr": "3e évaluation mensuelle"}, {"id": "cal_20", "date": "2027-02-23", "end": "", "cat": "celebration", "en": "Mother Tongue Day", "fr": "Journée de la langue maternelle"}, {"id": "cal_21", "date": "2027-03-02", "end": "", "cat": "school", "en": "End of 2nd Term syllabus coverage", "fr": "Fin du programme du 2e trimestre"}, {"id": "cal_22", "date": "2027-03-05", "end": "", "cat": "school", "en": "Submission of 2nd Term examination questions", "fr": "Remise des sujets d’examen du 2e trimestre"}, {"id": "cal_23", "date": "2027-03-07", "end": "", "cat": "school", "en": "Beginning of 3rd Term syllabus coverage", "fr": "Début du programme du 3e trimestre"}, {"id": "cal_24", "date": "2027-03-08", "end": "", "cat": "celebration", "en": "International Women’s Day – Commonwealth Day", "fr": "Journée internationale de la femme – Journée du Commonwealth"}, {"id": "cal_25", "date": "2027-03-09", "end": "2027-03-19", "cat": "exam", "en": "Nursery exams (2nd Term)", "fr": "Examens de la maternelle (2e trimestre)"}, {"id": "cal_26", "date": "2027-03-16", "end": "2027-03-19", "cat": "exam", "en": "Primary exams (2nd Term)", "fr": "Examens du primaire (2e trimestre)"}, {"id": "cal_27", "date": "2027-03-25", "end": "", "cat": "holiday", "en": "Closing of 2nd Term for the holidays", "fr": "Fin du 2e trimestre, début des congés"}, {"id": "cal_28", "date": "2027-04-12", "end": "", "cat": "school", "en": "Re-opening for the 3rd Term", "fr": "Rentrée du 3e trimestre"}, {"id": "cal_29", "date": "2027-05-10", "end": "2027-06-16", "cat": "exam", "en": "Official exams: G.C.E, practicals, sports, F.S.L.C", "fr": "Examens officiels : G.C.E, épreuves pratiques, sport, F.S.L.C (CEPE)"}, {"id": "cal_30", "date": "2027-05-11", "end": "", "cat": "school", "en": "Submission of 3rd Term examination questions", "fr": "Remise des sujets d’examen du 3e trimestre"}, {"id": "cal_31", "date": "2027-05-18", "end": "", "cat": "exam", "en": "Beginning of Nursery exams (3rd Term)", "fr": "Début des examens de la maternelle (3e trimestre)"}, {"id": "cal_32", "date": "2027-05-20", "end": "", "cat": "celebration", "en": "National Day", "fr": "Fête nationale"}, {"id": "cal_33", "date": "2027-05-25", "end": "2027-06-01", "cat": "exam", "en": "Primary exams (3rd Term)", "fr": "Examens du primaire (3e trimestre)"}, {"id": "cal_34", "date": "2027-06-04", "end": "", "cat": "event", "en": "Proposed date for the Graduation / Prize Award Ceremony", "fr": "Date proposée pour la remise des diplômes et des prix"}, {"id": "cal_35", "date": "2027-06-08", "end": "", "cat": "meeting", "en": "Class council for the academic year", "fr": "Conseil de classe de l’année"}, {"id": "cal_36", "date": "2027-06-09", "end": "", "cat": "school", "en": "Closing of pupils – distribution of report cards", "fr": "Fin des cours des élèves – remise des bulletins"}, {"id": "cal_37", "date": "2027-06-11", "end": "", "cat": "holiday", "en": "Official closing of the academic year", "fr": "Clôture officielle de l’année scolaire"}];
+const CAL_CATS = () => ({school: [T('Vie scolaire', 'School life'), 'blue'], exam: [T('Évaluations et examens', 'Tests and exams'), 'red'], celebration: [T('Journées et célébrations', 'Days and celebrations'), 'green'], meeting: [T('Réunions', 'Meetings'), 'amber'], event: [T('Sorties et cérémonies', 'Outings and ceremonies'), 'amber'], holiday: [T('Congés et clôtures', 'Holidays and closings'), 'grey']});
+const canEditCal = (r = S.profile?.role) => ['direction', 'president', 'vicepresident'].includes(r);
+const evTitle = e => EN() ? (e.en || e.fr) : (e.fr || e.en);
+const evEnd = e => e.end && e.end > e.date ? e.end : e.date;
+const sortedEvents = () => S.events.slice().sort((a, b) => a.date.localeCompare(b.date) || (a.en || '').localeCompare(b.en || ''));
+const upcoming = n => { const d = today(); return sortedEvents().filter(e => evEnd(e) >= d).slice(0, n); };
+function evWhen(e) {
+  const f = ds => { try { return new Date(ds + 'T12:00:00').toLocaleDateString(LOC(), {weekday: 'short', day: 'numeric', month: 'short'}); } catch { return frDate(ds); } };
+  return e.end && e.end > e.date ? `${f(e.date)} → ${f(e.end)}` : f(e.date);
+}
+function evRow(e) {
+  const c = CAL_CATS()[e.cat] || CAL_CATS().school, d = today(), now = e.date <= d && evEnd(e) >= d;
+  return `<button class="row" data-a="${canEditCal() ? 'cal-edit' : 'noop'}" data-v="${e.id}" style="align-items:flex-start${evEnd(e) < d ? ';opacity:.55' : ''}"><span class="grow"><span class="num small" style="font-weight:700;color:var(--carbon)">${cap(evWhen(e))}</span><br><span class="name">${esc(evTitle(e))}</span>${e.note ? `<br><span class="small muted">${esc(e.note)}</span>` : ''}</span>${now ? `<span class="chip green">${T('En cours', 'Now')}</span>` : `<span class="chip ${c[1]}" style="font-weight:600">${c[0].split(' ')[0]}</span>`}</button>`;
+}
+function nextEventsCard(n = 3) {
+  const list = upcoming(n);
+  if (!list.length) return '';
+  return `<div class="section"><div class="section-head"><h3>${T('Prochains événements', 'Coming up')}</h3><button class="btn ghost sm" data-a="tab" data-v="calendrier">${T('Calendrier', 'Calendar')}</button></div><div class="panel rows">${list.map(evRow).join('')}</div></div>`;
+}
+function viewCalendrier() {
+  const list = sortedEvents(), months = {};
+  list.forEach(e => { const k = e.date.slice(0, 7); (months[k] = months[k] || []).push(e); });
+  const showPast = S.calPast, d = today();
+  const keys = Object.keys(months).filter(k => showPast || months[k].some(e => evEnd(e) >= d));
+  const mName = k => { try { return cap(new Date(k + '-15T12:00:00').toLocaleDateString(LOC(), {month: 'long', year: 'numeric'})); } catch { return k; } };
+  return `<div class="section"><div class="section-head"><h2>${T('Calendrier des activités', 'Calendar of activities')} ${YEAR}</h2>${canEditCal() ? `<button class="btn primary sm" data-a="cal-add">${T('Ajouter', 'Add')}</button>` : ''}</div>
+    <span class="small muted">${T('Proposé par la directrice. Les dates peuvent changer : consultez-le régulièrement.', 'Proposed by the head teacher. Dates may change: check it regularly.')}${canEditCal() ? ' ' + T('Touchez une ligne pour la modifier.', 'Tap a row to edit it.') : ''}</span>
+    <div class="legend">${Object.values(CAL_CATS()).map(c => `<span class="chip ${c[1]}">${c[0]}</span>`).join('')}</div>
+    <button class="btn ghost sm" data-a="cal-past" style="align-self:flex-start">${showPast ? T('Masquer les événements passés', 'Hide past events') : T('Afficher aussi les événements passés', 'Also show past events')}</button></div>
+  ${!list.length ? `<div class="panel empty"><b>${T('Calendrier vide', 'Calendar is empty')}</b>${canEditCal() ? `<span>${T('Importez le calendrier proposé pour 2026-2027, puis modifiez-le si besoin.', 'Import the proposed 2026-2027 calendar, then edit it as needed.')}</span><button class="btn primary" data-a="cal-import">${T('Importer le calendrier proposé', 'Import the proposed calendar')}</button>` : ''}</div>`
+    : keys.map(k => `<div class="section"><h3>${mName(k)}</h3><div class="panel rows">${months[k].filter(e => showPast || evEnd(e) >= d).map(evRow).join('')}</div></div>`).join('')}`;
+}
+function sheetCalEdit(id) {
+  const e = id ? S.events.find(x => x.id === id) : null, v = e || {date: today(), end: '', cat: 'school', en: '', fr: '', note: ''};
+  return {title: () => e ? T('Modifier l’événement', 'Edit event') : T('Nouvel événement', 'New event'), body: () => `<form data-form="cal" data-id="${e ? e.id : ''}">
+    <div class="grid2"><label class="f">${T('Date', 'Date')}<input id="ce-date" name="date" type="date" required value="${v.date}"></label><label class="f">${T('Jusqu’au', 'Until')}<span class="hint">${T('facultatif', 'optional')}</span><input id="ce-end" name="end" type="date" value="${v.end || ''}"></label></div>
+    <label class="f">${T('Intitulé en français', 'Title in French')}<input id="ce-fr" name="fr" value="${esc(v.fr || '')}"></label>
+    <label class="f">${T('Intitulé en anglais', 'Title in English')}<input id="ce-en" name="en" value="${esc(v.en || '')}"></label>
+    <label class="f">${T('Catégorie', 'Category')}<select id="ce-cat" name="cat">${Object.entries(CAL_CATS()).map(([k, c]) => `<option value="${k}" ${v.cat === k ? 'selected' : ''}>${c[0]}</option>`).join('')}</select></label>
+    <label class="f">${T('Précision', 'Details')}<span class="hint">${T('facultatif, ex. lieu, heure', 'optional, e.g. place, time')}</span><input id="ce-note" name="note" value="${esc(v.note || '')}"></label>
+    <label class="f" style="flex-direction:row;align-items:center;gap:10px"><input type="checkbox" id="ce-ann" name="announce" style="width:22px;min-height:22px">${T('Prévenir les parents et le personnel par une annonce', 'Notify parents and staff with an announcement')}</label>
+    <button class="btn primary" ${S.canWrite ? '' : 'disabled'}>${T('Enregistrer', 'Save')}</button>
+    ${e ? `<button class="btn" type="button" data-a="cal-del" data-v="${e.id}">${T('Supprimer cet événement', 'Delete this event')}</button>` : ''}
+  </form>`};
+}
 function viewEcole() {
+  const calTop = `<div class="section"><div class="section-head"><h3>${T('Calendrier des activités', 'Calendar of activities')}</h3><button class="btn ghost sm" data-a="tab" data-v="calendrier">${T('Tout voir', 'See all')}</button></div>${upcoming(3).length ? `<div class="panel rows">${upcoming(3).map(evRow).join('')}</div>` : `<div class="panel empty">${T('Aucun événement à venir.', 'No upcoming events.')}</div>`}</div>`;
   const groups = [['nursery', T('Maternelle (Pre-Nursery, Nursery 1 et 2)', 'Nursery (Pre-Nursery, Nursery 1 & 2)'), 'N1'], ['primary', T('Primaire, Class 1 à 5', 'Primary, Class 1 to 5'), 'C1'], ['c6', T('Primaire, Class 6', 'Primary, Class 6'), 'C6']];
   const li = a => `<ul style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:4px">${a.map(x => `<li>${x}</li>`).join('')}</ul>`;
   return `
@@ -1110,23 +1774,24 @@ function viewEcole() {
       <span>E-mail : <b>${SCHOOL.email}</b></span>
       <i class="muted">Motto : ${SCHOOL.motto} · ${SCHOOL.motto2}</i>
     </div></div>
+  ${calTop}
   <div class="section"><h3>${T('Horaires', 'Opening hours')}</h3><div class="panel tbl"><table><thead><tr><th>${T('Classe', 'Class')}</th><th>${T('Horaires', 'Time')}</th></tr></thead><tbody>
     <tr><td>${T('Maternelle', 'Nursery')}</td><td>07:30 – 13:00</td></tr><tr><td>Primary (1-5)</td><td>07:30 – 14:30</td></tr><tr><td>Primary 6</td><td>07:30 – 17:00</td></tr><tr><td>${T('Personnel enseignant', 'Teaching staff')}</td><td>${startTime()} – ${endTime()}</td></tr>
   </tbody></table></div></div>
   <div class="section"><h3>${T('Frais de scolarité', 'School fees')} ${YEAR}</h3>
     ${groups.map(([g, name, lv]) => `<div class="panel" style="padding:12px 14px;display:flex;flex-direction:column;gap:6px"><b>${name}</b>${feeBreakdown(lv)}</div>`).join('')}
-    <p class="small muted" style="margin:0">${T('Ces frais ne comprennent pas les livres : une liste est remise aux parents pour les acheter en librairie, ou s’adresser à la secrétaire. Tenue de sport disponible à l’école : 3 500 F.', 'These fees do not include books: a booklist is given to parents to buy from bookshops, or contact the secretary. Sportswear available in school: 3 500 F.')}</p></div>
+    <p class="small muted" style="margin:0">${T('Ces frais ne comprennent pas les livres : une liste est remise aux parents pour les acheter en librairie, ou s’adresser à la secrétaire.', 'These fees do not include books: a booklist is given to parents to buy from bookshops, or contact the secretary.')}</p></div>
   <div class="section"><h3>${T('Conditions d’admission', 'Admission requirements')}</h3><div class="panel" style="padding:14px">${li([T('Chemise cartonnée', 'File jacket'), T('Photocopie de l’acte de naissance', 'Photocopy of birth certificate'), T('Photocopie du carnet de vaccination (maternelle)', 'Photocopy of vaccination card for nursery'), T('Bulletin scolaire pour les nouveaux élèves', 'Report card for new pupils')])}</div></div>
   <div class="section"><h3>${T('Formalités d’inscription : à apporter', 'Registration formalities: to bring')}</h3><div class="panel" style="padding:14px">${li([T('Photocopie de l’acte de naissance (1)', 'Photocopy of birth certificate (01)'), T('Chemise cartonnée (1)', 'File jacket (01)'), T('Rame de papier (1)', 'Ream of papers (01)'), T('Rouleaux de papier hygiénique (3)', 'Rolls of toilet paper (03)'), T('Savon en cube (1)', 'Soap cubes (01)'), T('Uniformes scolaires (2)', 'School uniforms (02)'), T('Tenue de sport (1)', 'Set of sportswear (01)')])}</div></div>
   <div class="section"><h3>${T('Uniformes', 'Uniforms')}</h3><div class="grid2">
-    <div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:6px"><b>${T('Garçons', 'Boys')}</b>${li([T('2 chemises blanches, col et poche roses', '2 white shirts with pink collar and pink pocket'), T('Chaussures ou sandales noires', 'Black shoes or sandals'), T('Chaussettes blanches', 'White socks'), T('Tenue de sport à l’école (3 500 F)', 'Sportswear available in school (3 500 F)')])}</div>
-    <div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:6px"><b>${T('Filles', 'Girls')}</b>${li([T('2 chemisiers blancs à pèlerine', '2 white blouses with cape'), T('2 jupes-chasubles roses', '2 pink pinafore skirts'), T('Chaussures ou sandales noires', 'Black shoes or sandals'), T('Chaussettes blanches', 'White socks'), T('Tenue de sport à l’école (3 500 F)', 'Sportswear available in school (3 500 F)'), T('Tenue de cérémonie : modèle à l’école', 'Ceremonial wear: sample in school')])}</div>
+    <div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:6px"><b>${T('Garçons', 'Boys')}</b>${li([T('2 chemises blanches, col et poche roses', '2 white shirts with pink collar and pink pocket'), T('Chaussures ou sandales noires', 'Black shoes or sandals'), T('Chaussettes blanches', 'White socks'), T('Tenue de sport', 'Sportswear')])}</div>
+    <div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:6px"><b>${T('Filles', 'Girls')}</b>${li([T('2 chemisiers blancs à pèlerine', '2 white blouses with cape'), T('2 jupes-chasubles roses', '2 pink pinafore skirts'), T('Chaussures ou sandales noires', 'Black shoes or sandals'), T('Chaussettes blanches', 'White socks'), T('Tenue de sport', 'Sportswear'), T('Tenue de cérémonie : modèle à l’école', 'Ceremonial wear: sample in school')])}</div>
   </div></div>
   <div class="section"><h3>${T('Coiffure', 'Hairstyle')}</h3><div class="panel" style="padding:14px">${li([T('Garçons : cheveux proprement rasés', 'Boys: neatly shaved hair'), T('Filles : tresses nettes (bakala), sans mèches ajoutées', 'Girls: neat cornrows (bakala), no mesh attached')])}</div></div>`;
 }
 function viewPlus() {
-  const items = [['ecole', T('L’école : brochure', 'School: brochure'), T('Horaires, frais, admission, uniformes', 'Hours, fees, admission, uniforms'), 'home'], ['eleves', T('Élèves', 'Pupils'), T('Inscriptions, fiches et parents', 'Enrolment, records and parents'), 'kids'], ['stats', T('Statistiques comparées', 'Year-on-year statistics'), T('Effectifs et résultats Common Entrance / FSLC', 'Enrolment and Common Entrance / FSLC results'), 'stats'], ['recus', T('Reçus', 'Receipts'), T('Tous les reçus de l’année', 'All receipts this year'), 'receipt'], ['impayes', T('Impayés', 'Arrears'), T('Relancer les familles', 'Remind families'), 'alert'], ['acces', T('Accès à l’application', 'App access'), T('Comptes, codes et envoi par WhatsApp', 'Accounts, codes and sending by WhatsApp'), 'user'], ['personnel', T('Présences du personnel', 'Staff attendance'), T('Arrivées, départs et retards des enseignants et de la directrice', 'Arrival, departure and lateness of teachers and head teacher'), 'clock'], ['reglages', T('Réglages', 'Settings'), T('Frais, enseignants, seuil d’absences', 'Fees, teachers, absence threshold'), 'gear'], ['profil', T('Mon profil', 'My profile'), T('Changer de profil', 'Change profile'), 'user']];
-  return `<div class="section"><h2>${T('Plus', 'More')}</h2><div class="panel rows">${items.filter(i => isAdmin() || !['reglages', 'acces'].includes(i[0])).map(i => `<button class="row" data-a="tab" data-v="${i[0]}"><span style="color:var(--carbon)">${ICON[i[3]]}</span><span class="grow"><span class="name">${i[1]}</span><br><span class="small muted">${i[2]}</span></span></button>`).join('')}</div></div>`;
+  const items = [['notes', T('Notes et appréciations', 'Marks and comments'), T('Vérifier les notes et appréciations des enseignants', 'Check the teachers’ marks and comments'), 'stats'], ['travaux', T('Travaux', 'Works'), T('Chantiers et contrôles du surveillant général', 'Building works and inspections'), 'home'], ['fonds', T('Appels de fonds', 'Funds requests'), T('Salaires du mois, événements et fêtes : validation et paiement', 'Monthly salaries, events and parties: approval and payment'), 'money'], ['calendrier', T('Calendrier des activités', 'Calendar of activities'), T('Rentrée, examens, journées, congés', 'Term dates, exams, special days, holidays'), 'check'], ['collecte', T('Collecte de la 1re tranche', '1st installment collection'), T('Attendu, reçu et reste à percevoir par classe', 'Expected, received and outstanding by class'), 'stats'], ['decaisse', T('Décaissements', 'Disbursements'), T('Sorties d’argent enregistrées par la secrétaire', 'Payouts recorded by the secretary'), 'receipt'], ['ecole', T('L’école : brochure', 'School: brochure'), T('Horaires, frais, admission, uniformes', 'Hours, fees, admission, uniforms'), 'home'], ['eleves', T('Élèves', 'Pupils'), T('Inscriptions, fiches et parents', 'Enrolment, records and parents'), 'kids'], ['stats', T('Statistiques comparées', 'Year-on-year statistics'), T('Effectifs et résultats Common Entrance / FSLC', 'Enrolment and Common Entrance / FSLC results'), 'stats'], ['recus', T('Reçus', 'Receipts'), T('Tous les reçus de l’année', 'All receipts this year'), 'receipt'], ['impayes', T('Impayés', 'Arrears'), T('Relancer les familles', 'Remind families'), 'alert'], ['acces', T('Accès à l’application', 'App access'), T('Comptes, codes et envoi par WhatsApp', 'Accounts, codes and sending by WhatsApp'), 'user'], ['personnel', T('Présences du personnel', 'Staff attendance'), T('Arrivées, départs et retards des enseignants et de la directrice', 'Arrival, departure and lateness of teachers and head teacher'), 'clock'], ['reglages', T('Réglages', 'Settings'), T('Frais, enseignants, seuil d’absences', 'Fees, teachers, absence threshold'), 'gear'], ['profil', T('Mon profil', 'My profile'), T('Changer de profil', 'Change profile'), 'user']];
+  return `<div class="section"><h2>${T('Plus', 'More')}</h2><div class="panel rows">${items.filter(i => isAdmin() || (i[0] === 'travaux' ? canSeeWorks() : S.profile.role === 'supervisor' ? ['eleves', 'ecole', 'calendrier', 'profil'].includes(i[0]) : i[0] === 'fonds' ? canSeePay() : isCashier() ? ['recus', 'impayes', 'ecole', 'calendrier', 'profil'].includes(i[0]) : !['reglages', 'acces', 'decaisse', 'recus', 'impayes', 'collecte'].includes(i[0]))).map(i => `<button class="row" data-a="tab" data-v="${i[0]}"><span style="color:var(--carbon)">${ICON[i[3]]}</span><span class="grow"><span class="name">${i[1]}</span><br><span class="small muted">${i[2]}</span></span></button>`).join('')}</div></div>`;
 }
 function viewReglages() {
   const c = cfg(), fees = c.fees || {}, t = c.teachers || {};
@@ -1144,7 +1809,7 @@ function viewReglages() {
       <div class="grid2"><label class="f">${T('Date limite 1re tranche', '1st installment deadline')}<input id="due1" name="due1" type="date" value="${due1()}"></label><label class="f">${T('Date limite 2e tranche', '2nd installment deadline')}<input id="due2" name="due2" type="date" value="${due2()}"></label></div>
       <button class="btn sm" type="button" data-a="brochure-fees">${T('Remettre les tarifs de la brochure', 'Reset to brochure fees')}</button>
     </div>
-    <div class="section"><h3>${T('Personnel', 'Staff')}</h3><div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:10px"><label class="f">${T('Nom de la directrice', 'Head teacher’s name')}<input id="dir-name" name="dir-name" value="${esc(c.directorName || '')}"></label><div class="grid2"><label class="f">${T('Assistante directrice', 'Assistant head teacher')}<input id="adj-name" name="adj-name" value="${esc(c.assistantName || '')}"></label><label class="f">${T('Secrétaire', 'Secretary')}<input id="sec-name" name="sec-name" value="${esc(c.secretaryName || '')}"></label></div><div class="grid2"><label class="f">${T('Heure d’arrivée attendue', 'Expected arrival')}<input id="start-t" name="start-t" type="time" value="${startTime()}"></label><label class="f">${T('Heure de départ attendue', 'Expected departure')}<input id="end-t" name="end-t" type="time" value="${endTime()}"></label></div><label class="f">${T('Écart toléré entre le pointage et la secrétaire (minutes)', 'Allowed gap between clock-in and secretary (minutes)')}<input id="gap-t" name="gap-t" type="number" min="1" value="${c.gapTolerance || 10}"></label></div></div>
+    <div class="section"><h3>${T('Personnel', 'Staff')}</h3><div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:10px"><label class="f">${T('Nom de la directrice', 'Head teacher’s name')}<input id="dir-name" name="dir-name" value="${esc(c.directorName || '')}"></label><div class="grid2"><label class="f">${T('Assistante directrice', 'Assistant head teacher')}<input id="adj-name" name="adj-name" value="${esc(c.assistantName || '')}"></label><label class="f">${T('Secrétaire comptable', 'Secretary-bursar')}<input id="sec-name" name="sec-name" value="${esc(c.secretaryName || '')}"></label></div><div class="grid2"><label class="f">${T('Heure d’arrivée attendue', 'Expected arrival')}<input id="start-t" name="start-t" type="time" value="${startTime()}"></label><label class="f">${T('Heure de départ attendue', 'Expected departure')}<input id="end-t" name="end-t" type="time" value="${endTime()}"></label></div><label class="f">${T('Écart toléré entre le pointage et la secrétaire (minutes)', 'Allowed gap between clock-in and secretary (minutes)')}<input id="gap-t" name="gap-t" type="number" min="1" value="${c.gapTolerance || 10}"></label></div></div>
     <div class="section"><h3>${T('Présences', 'Attendance')}</h3><label class="f">${T('Alerter la direction à partir de', 'Alert the head office from')}<span class="hint">${T('nombre d’absences dans le trimestre', 'number of absences in the term')}</span><input id="abs-th" name="abs-th" type="number" min="1" value="${c.absenceThreshold || 5}"></label></div>
   </form>
   <div class="section"><h3>${T('Données d’exemple', 'Sample data')}</h3><div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:8px">
@@ -1159,7 +1824,7 @@ function viewProfil() {
     <div class="row"><span class="grow"><span class="name">${T('Langue', 'Language')}</span><br><span class="small muted">${EN() ? 'English' : 'Français'}</span></span>${langBtn()}</div></div>
     <button class="btn" data-a="logout">${T('Se déconnecter', 'Sign out')}</button></div>
     ${myStaffKey() ? (() => { const o = staffMonth(myStaffKey(), today().slice(0, 7)); return `<div class="section"><h3>${T('Mes présences ce mois', 'My attendance this month')}</h3><div class="kpis"><div class="kpi"><span class="v">${o.present}</span><span class="l">${T('jours pointés', 'days clocked in')}</span></div><div class="kpi"><span class="v">${o.late}</span><span class="l">${T('retards', 'late arrivals')} · ${T('arrivée moy.', 'avg in')} ${o.avgIn}</span></div></div></div>`; })() : ''}
-    <div class="section"><div class="section-head"><h3>${T('L’école', 'The school')}</h3><button class="btn ghost sm" data-a="tab" data-v="ecole">${T('Brochure', 'Brochure')}</button></div><div class="panel" style="padding:14px;display:flex;gap:14px;align-items:center">
+    <div class="section"><div class="section-head"><h3>${T('L’école', 'The school')}</h3><span class="btns"><button class="btn ghost sm" data-a="tab" data-v="calendrier">${T('Calendrier', 'Calendar')}</button><button class="btn ghost sm" data-a="tab" data-v="ecole">${T('Brochure', 'Brochure')}</button></span></div><div class="panel" style="padding:14px;display:flex;gap:14px;align-items:center">
       <div class="logo-tile" style="width:96px;height:64px"><img src="${LOGO}" alt="" style="width:88px"></div>
       <div class="small"><b>${SCHOOL.name}</b><br>${SCHOOL.sub}<br>${SCHOOL.addr}<br>Tel. ${SCHOOL.tel}<br><i class="muted">${EN() ? SCHOOL.motto : SCHOOL.motto2}</i></div></div></div>`;
 }
@@ -1251,10 +1916,11 @@ function sheetStudent(id) {
     const pays = S.payments.filter(p => p.studentId === s.id); const role = S.profile.role;
     return `<div style="display:flex;gap:14px;align-items:flex-start">${photoBox(s, 84)}<div class="section" style="min-width:0"><h3>${esc(s.name)}</h3><span class="muted small">${LV[s.level]?.name}${s.sex ? ' · ' + (s.sex === 'F' ? T('Fille', 'Girl') : T('Garçon', 'Boy')) : ''}${s.birth ? ' · ' + T('né(e) le ', 'born ') + frDate(s.birth) : ''}</span>
       <span class="small">${T('Parent', 'Parent')} : <b>${esc(s.parentName || '—')}</b> · ${esc(s.parentPhone || '—')}</span></div></div>
+    ${role !== 'parent' && role !== 'teacher' ? admissionBlock(s) : ''}
     <div class="kpis"><div class="kpi"><span class="v">${c.A}</span><span class="l">${T(`absences ce trimestre (${cy.A} sur l’année)`, `absences this term (${cy.A} this year)`)}</span></div><div class="kpi"><span class="v">${c.R}</span><span class="l">${T('retards ce trimestre', 'late arrivals this term')}</span></div></div>
-    ${(isMgr(role) || role === 'accountant') && feesSet() ? `<div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:6px"><div class="section-head"><span>${T('Payé', 'Paid')} <b class="num">${money(f.paid)}</b></span><span class="small muted num">${T('sur', 'of')} ${money(f.total)}${s.discount ? ` (${T('réduction', 'discount')} ${money(s.discount)})` : ''}</span></div><div class="bar"><i style="width:${f.total ? Math.min(100, f.paid / f.total * 100) : 0}%"></i></div>${f.late ? `<span class="small" style="color:var(--stamp)">${T('Échu non payé', 'Due and unpaid')} : <b class="num">${money(f.late)}</b></span>` : ''}</div>` : ''}
-    ${isMgr(role) || role === 'accountant' ? `<div class="section"><h3>${T('Paiements', 'Payments')}</h3>${pays.length ? `<div class="panel rows">${pays.map(payRow).join('')}</div>` : `<div class="panel empty">${T('Aucun paiement cette année.', 'No payments this year.')}</div>`}</div>` : ''}
-    <div class="btns"><button class="btn" data-a="card" data-v="${s.id}">${ICON.qr} ${T('Carte d’élève', 'Pupil’s card')}</button>${role === 'accountant' || isMgr(role) ? `<button class="btn primary" data-a="pay" data-v="${s.id}">${T('Encaisser', 'Record payment')}</button>` : ''}${isMgr(role) || role === 'secretary' ? `<button class="btn" data-a="edit-student" data-v="${s.id}">${T('Modifier', 'Edit')}</button><button class="btn" data-a="add-student" data-v="${s.level}">${T('Inscrire un autre élève', 'Enrol another pupil')}</button>` : ''}${role !== 'secretary' ? `<button class="btn" data-a="chat" data-v="${s.id}">${T('Messages au parent', 'Message the parent')}</button>` : ''}</div>
+    ${(isAdmin(role) || isCashier(role)) && feesSet() ? `<div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:6px"><div class="section-head"><span>${T('Payé', 'Paid')} <b class="num">${money(f.paid)}</b></span><span class="small muted num">${T('sur', 'of')} ${money(f.total)}${s.discount ? ` (${T('réduction', 'discount')} ${money(s.discount)})` : ''}</span></div><div class="bar"><i style="width:${f.total ? Math.min(100, f.paid / f.total * 100) : 0}%"></i></div>${f.late ? `<span class="small" style="color:var(--stamp)">${T('Échu non payé', 'Due and unpaid')} : <b class="num">${money(f.late)}</b></span>` : ''}</div>` : ''}
+    ${isAdmin(role) || isCashier(role) ? `<div class="section"><h3>${T('Paiements', 'Payments')}</h3>${pays.length ? `<div class="panel rows">${pays.map(payRow).join('')}</div>` : `<div class="panel empty">${T('Aucun paiement cette année.', 'No payments this year.')}</div>`}</div>` : ''}
+    <div class="btns"><button class="btn" data-a="card" data-v="${s.id}">${ICON.qr} ${T('Carte d’élève', 'Pupil’s card')}</button>${isCashier(role) ? `<button class="btn primary" data-a="pay" data-v="${s.id}">${T('Encaisser', 'Record payment')}</button>` : ''}${isMgr(role) || role === 'secretary' ? `<button class="btn" data-a="edit-student" data-v="${s.id}">${T('Modifier', 'Edit')}</button><button class="btn" data-a="add-student" data-v="${s.level}">${T('Inscrire un autre élève', 'Enrol another pupil')}</button>` : ''}${role !== 'secretary' ? `<button class="btn" data-a="chat" data-v="${s.id}">${T('Messages au parent', 'Message the parent')}</button>` : ''}</div>
     ${isAdmin(role) || role === 'secretary' ? parentAccessBlock(s) : ''}`; }};
 }
 function sheetPay(id) {
@@ -1380,6 +2046,47 @@ async function saveFile(filename, data, type) {
 }
 const ACT = {
   noop: () => {},
+  'work-add': () => openSheet(sheetWorkEdit(null)),
+  'work-edit': d => openSheet(sheetWorkEdit(d.v)),
+  'work-open': d => openSheet(sheetWork(d.v)),
+  'check-add': d => openSheet(sheetCheck(d.v)),
+  'scale-edit': () => openSheet(sheetScale()),
+  'req-new': () => openSheet(sheetReqNew()),
+  'evreq-new': () => openSheet(sheetEvReqNew()),
+  'xr-open': d => openSheet(sheetXR(d.v)),
+  'xr-validate': async d => { const ok = await write(db => db.doc('expreq/' + d.v).update({status: 'validated', validatedBy: S.profile.name || ROLE_NAME()[S.profile.role], validatedAt: today(), rejectReason: ''}), T('Dépense validée', 'Expense approved')); if (ok) refreshSheet(); },
+  'xr-reject-ask': d => { S.xrRejecting = d.v; refreshSheet(); },
+  'xr-del': async d => { const ok = await write(db => db.doc('expreq/' + d.v).delete(), T('Demande supprimée', 'Request deleted')); if (ok) closeSheet(); },
+  'evreq-pay': d => { S.expCat = 'event'; S.payReq = d.v; openSheet(sheetExpAdd()); },
+  'quote-del': async d => { const q = S.fundreqs.find(x => x.id === d.v); if (!q) return; const quotes = (q.quotes || []).filter((_, i) => i !== +d.s); await write(db => db.doc('fundreq/' + q.id).update({quotes, total: quotes.reduce((t, x) => t + (+x.amount || 0), 0), status: 'draft'}), T('Devis retiré', 'Quote removed')); },
+  'req-submit-ev': async d => { const ok = await write(db => db.doc('fundreq/' + d.v).update({status: 'submitted', submittedAt: today(), rejectReason: ''}), T('Appel de fonds soumis au président', 'Request submitted to the chairman')); if (ok) refreshSheet(); },
+  'req-open': d => { S.reqRejecting = null; openSheet(sheetReq(d.v)); },
+  'req-submit': async d => { const f = document.querySelector('form[data-form="req-save"]'); if (f) await FORMS['req-save'](f, true); const ok = await write(db => db.doc('fundreq/' + d.v).update({status: 'submitted', submittedAt: today(), rejectReason: ''}), T('Appel de fonds soumis au président', 'Request submitted to the chairman')); if (ok) refreshSheet(); },
+  'req-del': async d => { if (await write(db => db.doc('fundreq/' + d.v).delete(), T('Brouillon supprimé', 'Draft deleted'))) closeSheet(); },
+  'req-validate': async d => { const ok = await write(db => db.doc('fundreq/' + d.v).update({status: 'validated', validatedBy: S.profile.name || ROLE_NAME()[S.profile.role], validatedAt: today()}), T('Appel de fonds validé', 'Request approved')); if (ok) refreshSheet(); },
+  'req-reject-ask': d => { S.reqRejecting = d.v; refreshSheet(); },
+  'req-pay': d => { S.expCat = 'salaries'; S.payReq = d.v; openSheet(sheetExpAdd()); setTimeout(() => { const sel = document.getElementById('ex-req'); if (sel) sel.value = d.v; }, 40); },
+  'req-csv': async d => { const q = S.fundreqs.find(x => x.id === d.v); if (!q) return; const rows = isEv(q) ? [[q.title, q.eventDate ? frDate(q.eventDate) : '', q.place || ''], [], [T('Déroulé', 'Programme')], ...(q.programme || []).map(p => [p.time, p.activity, p.who]), [], [T('Fournisseur', 'Supplier'), T('Objet', 'For'), T('N° devis', 'Quote no.'), T('Montant', 'Amount')], ...(q.quotes || []).map(x => [x.supplier, x.item, x.ref || '', x.amount]), ['Total', '', '', q.total], [T('Payé', 'Paid'), '', '', evPaid(q)], [T('Statut', 'Status'), REQ_ST()[q.status][0]]] : [['N°', T('Nom', 'Name'), T('Fonction', 'Role'), T('Montant', 'Amount')], ...q.rows.map((r, i) => [i + 1, r.name, r.role || '', r.amount]), ['', 'Total', '', q.total], [], [T('Statut', 'Status'), REQ_ST()[q.status][0]]];
+    const csv = '\ufeff' + rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n'); const name = isEv(q) ? `${T('appel-de-fonds', 'funds-request')}-${(q.title || 'evenement').replace(/[^\w-]+/g, '-').slice(0, 40)}.csv` : `${T('appel-de-fonds-salaires', 'salary-funds-request')}-${q.month}.csv`;
+    try { await saveFile(name, csv, 'text/csv'); } catch { toast(T('Export impossible.', 'Export failed.')); } },
+  'cal-add': () => openSheet(sheetCalEdit(null)),
+  'cal-edit': d => openSheet(sheetCalEdit(d.v)),
+  'cal-past': () => { S.calPast = !S.calPast; render(); },
+  'cal-del': async d => { if (await write(db => db.doc('events/' + d.v).delete(), T('Événement supprimé', 'Event deleted'))) closeSheet(); },
+  'cal-import': async () => { const ok = await write(async db => { for (const e of CAL_SEED) { const {id, ...rest} = e; await db.doc('events/' + id).set({...rest, note: '', year: YEAR, by: S.profile.name || '', updatedAt: nowISO()}); } }, T(`${CAL_SEED.length} événements importés`, `${CAL_SEED.length} events imported`)); },
+  'col-mode': d => { S.colMode = d.v; render(); },
+  'col-edit': () => openSheet(sheetColEdit()),
+  'col-csv': async () => { const {rows, tot, mode, snap} = collecteRows(); const data = [[T('Classe', 'Class'), T('Élèves', 'Pupils'), T('Montant attendu', 'Expected'), T('Montant reçu', 'Received'), T('Reste à percevoir', 'Still out'), '%'], ...rows.map(r => [r.l.name, r.n, r.exp, r.got, r.out, pct(r.got, r.exp)]), ['Total', tot.n, tot.exp, tot.got, tot.out, pct(tot.got, tot.exp)], [], [mode === 'releve' ? T('Relevé du ', 'Statement of ') + frDate(snap.date) : T('Selon l’application, le ', 'From the app, on ') + frDate(today())]];
+    const csv = '\ufeff' + data.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
+    try { await saveFile(`${T('collecte-1re-tranche', '1st-installment')}-${YEAR}.csv`, csv, 'text/csv'); } catch { toast(T('Export impossible.', 'Export failed.')); } },
+  'exp-add': () => { S.expCat = ''; S.expStu = ''; openSheet(sheetExpAdd()); },
+  'exp-open': d => { S.expCancelling = null; openSheet(sheetExp(d.v)); },
+  'exp-cancel': d => { S.expCancelling = d.v; refreshSheet(); },
+  'exp-img': async d => { const e = S.expenses.find(x => x.id === d.v); if (e) await deliverImage(`Bon-${e.voucher}.png`, await voucherPNG(e)); },
+  'exp-csv': async () => { const rows = [[T('N° bon', 'Voucher no.'), T('Date', 'Date'), T('Nature', 'Type'), T('Objet', 'Details'), T('Bénéficiaire', 'Paid to'), T('Montant', 'Amount'), T('Mode', 'Method'), T('Référence', 'Reference'), T('Élève', 'Pupil'), T('Saisi par', 'Recorded by'), T('Statut', 'Status')],
+      ...S.expenses.slice().reverse().map(e => [e.voucher, frDate(e.date), expCat(e.category), e.label || '', e.beneficiary || '', e.amount, EXP_METHODS()[e.method] || '', e.ref || '', e.studentName || '', e.by || '', e.cancelled ? T('Annulé', 'Cancelled') + ' : ' + (e.cancelReason || '') : ''])];
+    const csv = '\ufeff' + rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
+    try { await saveFile(`${T('decaissements', 'disbursements')}-${YEAR}.csv`, csv, 'text/csv'); } catch { toast(T('Export impossible.', 'Export failed.')); } },
   scan: () => { stopScan(); openSheet(sheetScan()); },
   'scan-start': () => startScan(),
   card: async d => { const s = student(d.v); openSheet(sheetCard(d.v)); },
@@ -1427,7 +2134,22 @@ const ACT = {
   'add-student': d => { S.sfMode = 'one'; openSheet(sheetStudentForm(null, d.v || (S.filter !== 'all' ? S.filter : 'C1'))); },
   'edit-student': d => openSheet(sheetStudentForm(student(d.v))),
   'sf-mode': d => { S.sfMode = d.v; refreshSheet(); },
-  pay: d => openSheet(sheetPay(d.v)),
+  'admit-refuse-ask': d => { S.admRefusing = d.v; refreshSheet(); },
+  'admit-issue': async d => { const s = student(d.v); if (!s) return; await write(async db => db.doc('students/' + s.id).update(await admitFields(s.level)), T('Attestation émise', 'Certificate issued')); },
+  'admit-cert': d => openSheet(sheetAdmit(d.v)),
+  'admit-img': async d => { const s = student(d.v); if (s) await deliverImage(`Attestation-admission-${s.admitNo}.png`, await admitPNG(s)); },
+  'g-term': d => { S.gTerm = +d.v; render(); },
+  'g-mode': d => { S.gMode = d.v; render(); },
+  'g-open': d => { S.gPupil = null; S.gReturning = null; openSheet(sheetGrades(d.v, +d.s)); },
+  'g-pupil': d => { S.gPupil = S.gPupil === d.v ? null : d.v; refreshSheet(); },
+  'g-submit': async d => { await gWrite(d.v, +d.s, {status: 'submitted', submittedAt: today(), submittedBy: S.profile.name || teacherOf(d.v) || ''}, T('Notes soumises à la directrice', 'Marks submitted to the head teacher')); },
+  'g-validate': async d => { const ok = await gWrite(d.v, +d.s, {status: 'validated', validatedBy: S.profile.name || ROLE_NAME()[S.profile.role], validatedAt: today(), returnNote: ''}, T('Notes validées', 'Marks approved')); if (ok) refreshSheet(); },
+  'g-return-ask': d => { S.gReturning = d.v; refreshSheet(); },
+  'g-reopen': async d => { const ok = await gWrite(d.v, +d.s, {status: 'draft', validatedBy: '', validatedAt: ''}, T('Notes rouvertes pour correction', 'Marks reopened')); if (ok) refreshSheet(); },
+  'g-csv': async d => { const lv = d.v, term = +d.s, g = gDoc(lv, term), st = gStats(lv, g); if (!g) return;
+    const rows = [[LV[lv].name, TERMS[term], YEAR], [T('Rang', 'Rank'), T('Élève', 'Pupil'), ...st.subs, T('Moyenne', 'Average'), T('Appréciation', 'Comment'), T('Observation directrice', 'Head teacher remark')], ...st.rows.slice().sort((a, b) => (a.rank || 999) - (b.rank || 999)).map(r => [r.rank || '', r.s.name, ...st.subs.map(k => fmt20(g.marks?.[r.s.id]?.[k])), r.avg != null ? fmt20(r.avg) : '', g.remarks?.[r.s.id] || '', g.headRemarks?.[r.s.id] || ''])];
+    await exportCSV(`${T('notes', 'marks')}-${LV[lv].name.replace(/\s+/g, '-')}-T${term}.csv`, rows); },
+  pay: d => { if (!isCashier()) { toast(T('Seule la secrétaire comptable émet les reçus de paiement.', 'Only the secretary-bursar issues payment receipts.')); return; } openSheet(sheetPay(d.v)); },
   'pay-obj': () => {},
   receipt: d => { S.cancelling = null; openSheet(sheetReceipt(d.v)); },
   'rcpt-cancel': d => { S.cancelling = d.v; refreshSheet(); },
@@ -1461,8 +2183,15 @@ document.addEventListener('click', e => { const t = e.target.closest('[data-a]')
 document.addEventListener('change', e => { const t = e.target;
   if (t.dataset.change === 'aa-role') { S.aaRole = t.value; refreshSheet(); }
   if (t.dataset.change === 'qr-file') { scanFile(t); }
+  if (t.dataset.change === 'er-cal') { const e = S.events.find(x => x.id === t.value); if (e) { const a = document.getElementById('er-title'), b = document.getElementById('er-date'); if (a) a.value = evTitle(e); if (b) b.value = e.date; } }
+  if (t.dataset.change === 'ex-items') { const sum = itemLines(t.value).reduce((a, x) => a + (+x.amount || 0), 0), a = document.getElementById('ex-amount'); if (sum && a) a.value = sum; }
+  if (t.dataset.change === 'ev-quote') { const q = S.fundreqs.find(x => x.id === document.getElementById('ex-req')?.value), x = q?.quotes?.[+t.value], a = document.getElementById('ex-amount'); if (x && a) a.value = Math.min(x.amount, Math.max(0, q.total - evPaid(q))); }
+  if (t.dataset.change === 'ev-req') { S.payReq = t.value; const b = document.getElementById('sheet-body'); if (b) b.innerHTML = S.sheet.body(); }
+  if (t.dataset.change === 'exp-month') { S.expMonth = t.value || today().slice(0, 7); render(); }
+  if (t.dataset.change === 'exp-cat') { S.expCat = t.value; const b = document.getElementById('sheet-body'); if (b) b.innerHTML = S.sheet.body(); }
+  if (t.dataset.change === 'exp-stu') { S.expStu = t.value; const keep = ['ex-label', 'ex-date', 'ex-method', 'ex-ref', 'ex-note'].map(i => [i, document.getElementById(i)?.value]); const b = document.getElementById('sheet-body'); if (b) { b.innerHTML = S.sheet.body(); keep.forEach(([i, v]) => { const el = document.getElementById(i); if (el && v) el.value = v; }); } }
   if (t.dataset.change === 'pay-obj') { const st = student(t.dataset.s), fr = st && feesOf(st.level), f = st && feeStatus(st), amt = document.getElementById('p-amount'); const v = t.value;
-    if (amt && fr) amt.value = v === 'sport' ? 3500 : v === 'pack1' ? Math.max(0, firstInst(fr) - f.paid) || '' : ['reg', 'inst1', 'inst2', 'exam', 'art'].includes(v) ? fr[v] || '' : ''; }
+    if (amt && fr) amt.value = v === 'pack1' ? Math.max(0, firstInst(fr) - f.paid) || '' : ['reg', 'inst1', 'inst2', 'exam', 'art'].includes(v) ? fr[v] || '' : ''; }
   if (t.dataset.change === 'staff-date') { S.stDate = t.value || today(); render(); }
   if (t.dataset.change === 'ap-date') { S.apDate = t.value || today(); S.draft = null; render(); }
   if (t.dataset.change === 'ap-reason') { S.draft.reasons[t.dataset.s] = t.value; S.draft.dirty = true; } });
@@ -1502,14 +2231,27 @@ const FORMS = {
     if (!body.name) return;
     if (!isMgr()) { if (id) { delete body.discount; delete body.discountReason; } else { body.discount = 0; body.discountReason = ''; } }
     let newId = null;
-    const ok = await write(db => { if (id) return db.doc('students/' + id).update(body); const ref = db.collection('students').doc(); newId = ref.id; return ref.set({...body, createdAt: nowISO(), year: YEAR, enrolledBy: S.profile.name || '', qrKey: genKey()}); }, id ? T('Fiche enregistrée', 'Record saved') : T('Élève inscrit(e)', 'Pupil enrolled'));
+    const ok = await write(async db => { if (id) return db.doc('students/' + id).update(body); const ref = db.collection('students').doc(); newId = ref.id; const adm = canAdmit() ? await admitFields(body.level) : {admission: 'pending'}; return ref.set({...body, ...adm, createdAt: nowISO(), year: YEAR, enrolledBy: S.profile.name || '', qrKey: genKey()}); }, id ? T('Fiche enregistrée', 'Record saved') : canAdmit() ? T('Élève inscrit(e) et admis(e)', 'Pupil enrolled and admitted') : T('Élève inscrit(e) : admission à prononcer par la directrice', 'Pupil enrolled: admission to be decided by the head teacher'));
     if (ok) syncParentLevels([body.phoneKey, digits(student(id)?.parentPhone)]);
     const pf = f.querySelector('#sf-photo')?.files?.[0]; if (ok && pf) await savePhoto(id || newId, pf, digits(body.parentPhone ?? student(id)?.parentPhone));
     if (ok) openSheet(sheetStudent(id || newId)); },
+  admit: async f => { const s = student(f.dataset.id), lv = new FormData(f).get('level'); if (!s) return;
+    const ok = await write(async db => db.doc('students/' + s.id).update({...await admitFields(lv), level: lv}), T('Élève admis(e) : attestation émise', 'Pupil admitted: certificate issued')); if (ok) refreshSheet(); },
+  'admit-refuse': async f => { const ok = await write(db => db.doc('students/' + f.dataset.id).update({admission: 'refused', admitRefusal: String(new FormData(f).get('reason')).trim(), admittedBy: S.profile.name || '', admittedAt: today(), status: 'left', leftAt: today(), leftReason: T('Admission refusée', 'Admission refused')}), T('Admission refusée', 'Admission refused')); if (ok) { S.admRefusing = null; refreshSheet(); } },
+  'g-save': async f => { const lv = f.dataset.id, term = +f.dataset.s, mode = f.dataset.m, g = gDoc(lv, term), fd = new FormData(f), pupils = byLevel(lv);
+    if (!canGrade(lv)) return; const st = g?.status === 'returned' ? {status: 'draft'} : {};
+    if (mode === '_rem') { const remarks = {...(g?.remarks || {})}; pupils.forEach(s => { const v = String(fd.get('r-' + s.id) ?? '').trim(); if (v) remarks[s.id] = v; else delete remarks[s.id]; }); await gWrite(lv, term, {remarks, ...st}, T('Appréciations enregistrées', 'Comments saved')); return; }
+    const marks = JSON.parse(JSON.stringify(g?.marks || {})); let bad = null;
+    pupils.forEach(s => { const v = parse20(fd.get('m-' + s.id)); if (v === null) { if (marks[s.id]) delete marks[s.id][mode]; return; } if (isNaN(v) || v < 0 || v > 20) { bad = bad || s.name; return; } marks[s.id] = {...(marks[s.id] || {}), [mode]: v}; });
+    if (bad) { toast(T(`Note invalide pour ${bad} : elle doit être entre 0 et 20.`, `Invalid mark for ${bad}: it must be between 0 and 20.`)); return; }
+    await gWrite(lv, term, {marks, ...st}, T(`Notes de ${mode} enregistrées`, `${mode} marks saved`)); },
+  'g-subjects': async f => { const lv = f.dataset.id, term = +f.dataset.s; const subjects = [...new Set(String(new FormData(f).get('subs') || '').split('\n').map(x => x.trim()).filter(Boolean))]; if (!subjects.length) return; await gWrite(lv, term, {subjects}, T('Matières enregistrées', 'Subjects saved')); },
+  'g-head': async f => { const lv = f.dataset.id, term = +f.dataset.s, g = gDoc(lv, term); const headRemarks = {...(g?.headRemarks || {})}; const v = String(new FormData(f).get('rem') || '').trim(); if (v) headRemarks[f.dataset.p] = v; else delete headRemarks[f.dataset.p]; await gWrite(lv, term, {headRemarks}, T('Observation enregistrée', 'Remark saved')); },
+  'g-return': async f => { const ok = await gWrite(f.dataset.id, +f.dataset.s, {status: 'returned', returnNote: String(new FormData(f).get('note')).trim(), validatedBy: S.profile.name || '', validatedAt: today()}, T('Notes renvoyées à l’enseignant', 'Marks sent back to the teacher')); if (ok) { S.gReturning = null; refreshSheet(); } },
   'students-many': async f => { const fd = new FormData(f), lv = fd.get('level');
     const rows = String(fd.get('list') || '').split('\n').map(l => l.split(/[;\t]/).map(x => x.trim())).filter(r => r[0]);
     if (!rows.length) return;
-    const ok = await write(async db => { for (const r of rows) await db.collection('students').doc().set({name: r[0], level: lv, parentName: r[1] || '', parentPhone: r[2] || '', phoneKey: digits(r[2]), status: 'active', discount: 0, createdAt: nowISO(), year: YEAR, qrKey: genKey()}); }, T(`${rows.length} élève(s) ajouté(s) en ${LV[lv].name}`, `${rows.length} pupil(s) added to ${LV[lv].name}`));
+    const ok = await write(async db => { for (const r of rows) { const adm = canAdmit() ? await admitFields(lv) : {admission: 'pending'}; await db.collection('students').doc().set({name: r[0], level: lv, parentName: r[1] || '', parentPhone: r[2] || '', phoneKey: digits(r[2]), status: 'active', discount: 0, ...adm, createdAt: nowISO(), year: YEAR, enrolledBy: S.profile.name || '', qrKey: genKey()}); } }, T(`${rows.length} élève(s) ajouté(s) en ${LV[lv].name}`, `${rows.length} pupil(s) added to ${LV[lv].name}`));
     if (ok) syncParentLevels(rows.map(r => digits(r[2])));
     if (ok) closeSheet(); },
   pay: async f => { const fd = new FormData(f), s = student(f.dataset.id), amount = num(fd.get('amount')); if (!amount) { toast(T('Indiquez le montant reçu.', 'Enter the amount received.')); return; }
@@ -1521,7 +2263,7 @@ const FORMS = {
       const ref = db.collection('payments').doc(); pid = ref.id;
       const p = {year: YEAR, studentId: s.id, phoneKey: digits(s.parentPhone), studentName: s.name, level: s.level, amount, object: obj, objectText: String(fd.get('objectText') || '').trim(), method: fd.get('method'), ref: String(fd.get('ref') || '').trim(), payer: String(fd.get('payer')).trim(), date: fd.get('date') || today(), receiptNo: n, receiptLabel: label, balanceAfter, by: S.profile.name || '', createdAt: nowISO(), cancelled: false};
       await ref.set(p);
-      await db.doc('messages/rcpt_' + pid).set({year: YEAR, kind: 'receipt', studentId: s.id, phoneKey: digits(s.parentPhone), level: s.level, paymentId: pid, at: p.createdAt, readBy: {}, from: 'Bursar',
+      await db.doc('messages/rcpt_' + pid).set({year: YEAR, kind: 'receipt', studentId: s.id, phoneKey: digits(s.parentPhone), level: s.level, paymentId: pid, at: p.createdAt, readBy: {}, from: S.profile.name || T('Secrétaire comptable', 'Secretary-bursar'),
         title: `Paiement reçu : ${money(amount)}`, body: `Nous avons bien reçu ${money(amount)} pour ${s.name} (${OBJ[obj]?.fr}). Reçu N° ${label}.${balanceAfter != null ? ' Solde restant pour l’année : ' + money(balanceAfter) + '.' : ''}`,
         en: {title: `Payment received: ${money(amount)}`, body: `We have received ${money(amount)} for ${s.name} (${OBJ[obj]?.en}). Receipt N° ${label}.${balanceAfter != null ? ' Balance left for the year: ' + money(balanceAfter) + '.' : ''}`}});
     }, T('Paiement enregistré', 'Payment saved'));
@@ -1542,6 +2284,82 @@ const FORMS = {
     if (inT && outT && toMin(outT) < toMin(inT)) { toast(T('Le départ est avant l’arrivée.', 'Departure is before arrival.')); return; }
     const ok = await staffWrite(ds, key, {status, in: status === 'P' ? inT : '', out: status === 'P' ? outT : '', note: String(fd.get('note') || '').trim(), editedBy: S.profile.name || ROLE_NAME()[S.profile.role], editedAt: nowISO()}, T('Présence enregistrée', 'Attendance saved'));
     if (ok) closeSheet(); },
+  exp: async f => { const fd = new FormData(f), cat = fd.get('category'), amount = num(fd.get('amount')), label = String(fd.get('label') || '').trim();
+    if (!amount) { toast(T('Indiquez le montant.', 'Enter the amount.')); return; }
+    if (!label) { toast(T('Précisez l’objet de la dépense.', 'Say what the expense is for.')); return; }
+    if (!String(fd.get('note') || '').trim()) { toast(T('Expliquez le besoin.', 'Explain the need.')); return; }
+    const items = itemLines(fd.get('items')), itemsSum = items.reduce((t, x) => t + (+x.amount || 0), 0);
+    if (items.length && itemsSum && itemsSum !== amount) { toast(T(`Le total des articles (${money(itemsSum)}) ne correspond pas au montant (${money(amount)}).`, `Items total (${money(itemsSum)}) does not match the amount (${money(amount)}).`)); return; }
+    const files = [...(f.querySelector('#ex-photos')?.files || [])].slice(0, 3); if (!files.length) { toast(T('Joignez une photo du justificatif ou du devis.', 'Attach a photo of the receipt or quote.')); return; }
+    const stu = cat === 'refund' ? student(fd.get('studentId')) : null; if (cat === 'refund' && !stu) { toast(T('Choisissez l’élève.', 'Choose the pupil.')); return; }
+    if (stu) { const paid = S.payments.filter(x => x.studentId === stu.id && !x.cancelled).reduce((t, x) => t + (+x.amount || 0), 0), back = S.expreqs.filter(x => x.category === 'refund' && x.studentId === stu.id && x.status !== 'rejected').reduce((t, x) => t + (+x.amount || 0), 0);
+      if (amount > paid - back) { toast(T(`Remboursement impossible : la famille a versé ${money(paid)} cette année, dont ${money(back)} déjà demandés en remboursement.`, `Refund not possible: the family paid ${money(paid)} this year, ${money(back)} of which already requested back.`)); return; } }
+    const btn = f.querySelector('button'); btn.disabled = true; let rid = null;
+    const ok = await write(async db => { const ref = db.collection('expreq').doc(); rid = ref.id; const photoIds = [];
+      for (const file of files) { const data = await readDocPhoto(file); const pr = db.collection('xrphotos').doc(); await pr.set({reqId: rid, data, byUid: myUid(), at: nowISO()}); photoIds.push(pr.id); S.qphotos['x:' + pr.id] = data; }
+      await ref.set({year: YEAR, category: cat, label, items, photoIds, byRole: S.profile.role, byUid: myUid(), beneficiary: String(fd.get('beneficiary') || '').trim(), amount, invoiceRef: String(fd.get('ref') || '').trim(), note: String(fd.get('note') || '').trim(),
+        studentId: stu?.id || null, studentName: stu?.name || '', level: stu?.level || null, markLeft: !!fd.get('markLeft'), status: 'submitted', by: S.profile.name || '', createdAt: nowISO()}); }, T('Demande envoyée au président pour validation', 'Request sent to the chairman for approval'));
+    if (ok && rid) { S.sheet = sheetXR(rid); render(); } else btn.disabled = false; },
+  'xr-reject': async f => { const ok = await write(db => db.doc('expreq/' + f.dataset.id).update({status: 'rejected', rejectReason: String(new FormData(f).get('reason')).trim(), validatedBy: S.profile.name || ROLE_NAME()[S.profile.role], validatedAt: today()}), T('Demande refusée', 'Request rejected')); if (ok) { S.xrRejecting = null; refreshSheet(); } },
+  'xr-pay': async f => { const fd = new FormData(f), r = S.expreqs.find(x => x.id === f.dataset.id); if (!r || r.status !== 'validated') { toast(T('Cette demande n’est pas validée.', 'This request is not approved.')); return; }
+    const btn = f.querySelector('button'); btn.disabled = true; let eid = null;
+    const ok = await write(async db => { const n = await nextNo('expenses'); const ref = db.collection('expenses').doc(); eid = ref.id;
+      await ref.set({year: YEAR, voucher: voucherLabel(n), voucherNo: n, category: r.category, label: r.label || '', beneficiary: String(fd.get('beneficiary') || r.beneficiary || '').trim(), amount: r.amount, date: fd.get('date') || today(), method: fd.get('method'), ref: String(fd.get('ref') || '').trim(), note: T('Validé par ', 'Approved by ') + (r.validatedBy || '') + (r.byRole && r.byRole !== 'secretary' ? ' · ' + T('demandé par ', 'requested by ') + (r.by || '') : ''),
+        expReqId: r.id, studentId: r.studentId || null, studentName: r.studentName || '', level: r.level || null, by: S.profile.name || '', createdAt: nowISO(), cancelled: false});
+      await db.doc('expreq/' + r.id).update({status: 'paid', expenseId: eid, paidAt: fd.get('date') || today(), paidBy: S.profile.name || '', beneficiary: String(fd.get('beneficiary') || r.beneficiary || '').trim()});
+      if (r.studentId && fd.get('markLeft')) await db.doc('students/' + r.studentId).update({status: 'left', leftAt: today(), leftReason: T('Désistement', 'Withdrawal')}); }, T('Paiement enregistré', 'Payment recorded'));
+    if (ok && eid) { S.expCancelling = null; S.sheet = sheetExp(eid); render(); } else btn.disabled = false; },
+  'exp-cancel': async f => { const fd = new FormData(f); const ok = await write(db => db.doc('expenses/' + f.dataset.id).update({cancelled: true, cancelReason: String(fd.get('reason')), cancelledAt: today(), cancelledBy: S.profile.name || ''}), T('Bon annulé', 'Voucher cancelled')); if (ok) { S.expCancelling = null; refreshSheet(); } },
+  col: async f => { const fd = new FormData(f), rows = {}; LEVELS.forEach(l => { const n = num(fd.get('n-' + l.id)); rows[l.id] = {n, exp: n * firstInst(feesOf(l.id)), got: num(fd.get('g-' + l.id))}; });
+    if (LEVELS.some(l => rows[l.id].got > rows[l.id].exp)) { toast(T('Un montant reçu dépasse le montant attendu.', 'A received amount is higher than expected.')); return; }
+    const ok = await write(db => db.doc('finance/' + YEAR).set({year: YEAR, collect1: {date: fd.get('date') || today(), rows, by: S.profile.name || '', at: nowISO()}}, {merge: true}), T('Relevé enregistré', 'Statement saved')); if (ok) { S.colMode = 'releve'; closeSheet(); } },
+  cal: async f => { const fd = new FormData(f), id = f.dataset.id, date = fd.get('date'), end = fd.get('end') || '', fr = String(fd.get('fr') || '').trim(), en = String(fd.get('en') || '').trim();
+    if (!date || (!fr && !en)) { toast(T('Indiquez la date et l’intitulé.', 'Enter the date and the title.')); return; }
+    if (end && end < date) { toast(T('La date de fin est avant la date de début.', 'End date is before start date.')); return; }
+    const body = {date, end, fr: fr || en, en: en || fr, cat: fd.get('cat'), note: String(fd.get('note') || '').trim(), year: YEAR, by: S.profile.name || '', updatedAt: nowISO()};
+    const ok = await write(async db => { await (id ? db.doc('events/' + id) : db.collection('events').doc()).set(body);
+      if (fd.get('announce')) { const when = d => frDate(d); await db.collection('messages').doc().set({year: YEAR, kind: 'announce', scope: 'all', at: nowISO(), readBy: {}, from: S.profile.name || ROLE_NAME()[S.profile.role], fromRole: S.profile.role,
+        title: (id ? 'Calendrier modifié : ' : 'Calendrier : ') + body.fr, body: `${body.fr} – ${when(date)}${end ? ' au ' + when(end) : ''}.${body.note ? ' ' + body.note : ''}`,
+        en: {title: (id ? 'Calendar updated: ' : 'Calendar: ') + body.en, body: `${body.en} – ${when(date)}${end ? ' to ' + when(end) : ''}.${body.note ? ' ' + body.note : ''}`}}); } }, T('Calendrier enregistré', 'Calendar saved'));
+    if (ok) closeSheet(); },
+  scale: async f => { const rows = parseScale(new FormData(f).get('list')); if (!rows.length) { toast(T('Saisissez au moins une personne.', 'Enter at least one person.')); return; }
+    if (await write(db => db.doc('payroll/scale').set({rows, total: reqTotal(rows), updatedAt: nowISO(), by: S.profile.name || ''}), T(`Barème enregistré : ${rows.length} personnes, ${money(reqTotal(rows))}`, `Scale saved: ${rows.length} people, ${money(reqTotal(rows))}`))) closeSheet(); },
+  'req-new': async f => { const m = new FormData(f).get('month'); if (!m) return; if (S.fundreqs.some(q => q.month === m && q.status !== 'rejected')) { toast(T('Un appel de fonds existe déjà pour ce mois.', 'A request already exists for this month.')); return; }
+    const rows = scaleRows().map(r => ({name: r.name, role: r.role || '', amount: +r.amount || 0})); let id = null;
+    const ok = await write(db => { const ref = db.collection('fundreq').doc(); id = ref.id; return ref.set({year: YEAR, month: m, kind: 'salaries', rows, total: reqTotal(rows), status: 'draft', note: '', createdBy: S.profile.name || '', createdAt: nowISO()}); }, T('Appel de fonds préparé', 'Request prepared'));
+    if (ok) { S.sheet = sheetReq(id); render(); } },
+  'req-save': async (f, silent) => { const fd = new FormData(f), q = S.fundreqs.find(x => x.id === f.dataset.id); if (!q) return; const rows = q.rows.map((r, i) => ({...r, amount: fd.get('a-' + i) != null ? num(fd.get('a-' + i)) : r.amount}));
+    await write(db => db.doc('fundreq/' + q.id).update({rows, total: reqTotal(rows), note: String(fd.get('note') || '').trim(), status: 'draft'}), silent ? '' : T('Appel de fonds enregistré', 'Request saved')); },
+  'req-reject': async f => { const ok = await write(db => db.doc('fundreq/' + f.dataset.id).update({status: 'rejected', rejectReason: String(new FormData(f).get('reason')).trim(), validatedBy: S.profile.name || ROLE_NAME()[S.profile.role], validatedAt: today()}), T('Appel de fonds refusé', 'Request rejected')); if (ok) { S.reqRejecting = null; refreshSheet(); } },
+  'exp-sal': async f => { const fd = new FormData(f), rid = fd.get('req'); if (!rid) return; const btn = f.querySelector('button'); btn.disabled = true;
+    const eid = await recordSalaryPayment(rid, fd.get('date'), fd.get('method'), String(fd.get('ref') || '').trim()); if (eid) { S.expCancelling = null; S.sheet = sheetExp(eid); render(); } else btn.disabled = false; },
+  work: async f => { const fd = new FormData(f), id = f.dataset.id; const body = {title: String(fd.get('title')).trim(), description: String(fd.get('description') || '').trim(), place: String(fd.get('place') || '').trim(), contractor: String(fd.get('contractor') || '').trim(), start: fd.get('start') || '', end: fd.get('end') || '', budget: num(fd.get('budget')), status: fd.get('status'), updatedAt: nowISO(), by: S.profile.name || ''};
+    if (!body.title) return; let wid = id;
+    const ok = await write(db => { if (id) return db.doc('works/' + id).update(body); const ref = db.collection('works').doc(); wid = ref.id; return ref.set({...body, createdAt: nowISO()}); }, T('Chantier enregistré', 'Works saved'));
+    if (ok) { S.sheet = sheetWork(wid); render(); } },
+  check: async f => { const fd = new FormData(f), wid = f.dataset.id, file = f.querySelector('#ck-photo')?.files?.[0]; const btn = f.querySelector('button'); btn.disabled = true;
+    let photo = ''; if (file) { try { photo = await readSitePhoto(file); } catch { toast(T('La photo n’a pas pu être lue.', 'The photo could not be read.')); } }
+    const progress = Math.max(0, Math.min(100, num(fd.get('progress'))));
+    const ok = await write(async db => { await db.collection('workchecks').doc().set({workId: wid, date: fd.get('date') || today(), progress, verdict: fd.get('verdict'), note: String(fd.get('note') || '').trim(), photo, by: S.profile.name || '', at: nowISO()});
+      await db.doc('works/' + wid).update({status: fd.get('status'), progress, lastCheck: fd.get('date') || today(), updatedAt: nowISO()}); }, T('Contrôle enregistré', 'Inspection saved'));
+    if (ok) { S.sheet = sheetWork(wid); render(); } else btn.disabled = false; },
+  'evreq-new': async f => { const fd = new FormData(f); let id = null;
+    const ok = await write(db => { const ref = db.collection('fundreq').doc(); id = ref.id; return ref.set({year: YEAR, kind: 'event', title: String(fd.get('title')).trim(), eventDate: fd.get('date'), month: String(fd.get('date') || today()).slice(0, 7), place: String(fd.get('place') || '').trim(), people: String(fd.get('people') || '').trim(), description: String(fd.get('description') || '').trim(), programme: [], quotes: [], rows: [], total: 0, paidAmount: 0, status: 'draft', createdBy: S.profile.name || '', createdAt: nowISO()}); }, T('Appel de fonds créé : ajoutez le déroulé et les devis', 'Request created: add the programme and quotes'));
+    if (ok) { S.sheet = sheetEvReq(id); render(); } },
+  'ev-prog': async f => { const programme = progLines(new FormData(f).get('prog')); await write(db => db.doc('fundreq/' + f.dataset.id).update({programme, status: 'draft'}), T('Déroulé enregistré', 'Programme saved')); },
+  'quote-add': async f => { const fd = new FormData(f), q = S.fundreqs.find(x => x.id === f.dataset.id); if (!q) return; const amount = num(fd.get('amount')); if (!amount) { toast(T('Indiquez le montant du devis.', 'Enter the quote amount.')); return; }
+    const btn = f.querySelector('button'); btn.disabled = true; const file = f.querySelector('#qa-photo')?.files?.[0];
+    const ok = await write(async db => { let photoId = ''; if (file) { const data = await readSitePhoto(file); const ref = db.collection('quotephotos').doc(); photoId = ref.id; await ref.set({reqId: q.id, data, at: nowISO()}); S.qphotos[photoId] = data; }
+      const quotes = [...(q.quotes || []), {supplier: String(fd.get('supplier')).trim(), item: String(fd.get('item')).trim(), amount, ref: String(fd.get('ref') || '').trim(), photoId}];
+      await db.doc('fundreq/' + q.id).update({quotes, total: quotes.reduce((t, x) => t + (+x.amount || 0), 0), status: 'draft'}); }, T('Devis ajouté', 'Quote added'));
+    btn.disabled = false; if (ok) f.reset(); },
+  'exp-ev': async f => { const fd = new FormData(f), q = S.fundreqs.find(x => x.id === fd.get('req')); if (!q || q.status !== 'validated') { toast(T('Cet appel de fonds n’est pas validé.', 'This request is not approved.')); return; }
+    const amount = num(fd.get('amount')), rest = Math.max(0, q.total - evPaid(q)); if (!amount) return; if (amount > rest) { toast(T(`Le montant dépasse le reste validé (${money(rest)}).`, `Amount exceeds what is left (${money(rest)}).`)); return; }
+    const qt = (q.quotes || [])[+fd.get('quote')] || {}; const btn = f.querySelector('button'); btn.disabled = true; let eid = null;
+    const ok = await write(async db => { const n = await nextNo('expenses'); const ref = db.collection('expenses').doc(); eid = ref.id;
+      await ref.set({year: YEAR, voucher: voucherLabel(n), voucherNo: n, category: 'event', label: q.title + (qt.item ? ' – ' + qt.item : ''), beneficiary: qt.supplier || '', amount, date: fd.get('date') || today(), method: fd.get('method'), ref: String(fd.get('ref') || qt.ref || '').trim(), note: T('Appel de fonds validé par ', 'Funds request approved by ') + (q.validatedBy || ''), fundReqId: q.id, studentId: null, studentName: '', level: null, by: S.profile.name || '', createdAt: nowISO(), cancelled: false});
+      const paidAmount = evPaid(q) + amount; await db.doc('fundreq/' + q.id).update({paidAmount, status: paidAmount >= q.total ? 'paid' : 'validated', paidAt: fd.get('date') || today(), paidBy: S.profile.name || ''}); }, T('Paiement enregistré', 'Payment recorded'));
+    if (ok && eid) { S.expCancelling = null; S.sheet = sheetExp(eid); render(); } else btn.disabled = false; },
   'verify-code': f => { const p = parseScan(new FormData(f).get('code')); if (p) { stopScan(); S.sheet = sheetVerify(p); render(); } else toast(T('Numéro de carte incomplet.', 'Incomplete card number.')); },
   settings: async f => { const fd = new FormData(f); const teachers = {}, fees = {};
     LEVELS.forEach(l => { teachers[l.id] = String(fd.get('t-' + l.id) || '').trim(); fees[l.id] = {}; FEE_PARTS.forEach(([k]) => fees[l.id][k] = num(fd.get(`f-${l.id}-${k}`))); });
