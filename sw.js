@@ -1,6 +1,6 @@
 // Les Yeux du Coeur – keeps the app usable offline.
 // Change VERSION each time you upload new files so phones pick up the update.
-const VERSION = 'lyc-v4';
+const VERSION = 'lyc-v5';
 const SHELL = ['./', 'index.html', 'app.js', 'firebase-config.js', 'manifest.webmanifest',
   'img/logo.png', 'img/stamp.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 

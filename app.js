@@ -15,9 +15,20 @@ function setLang(l) { LANG = l; lsSet('lyc-lang', l); document.documentElement.l
 document.documentElement.lang = LANG;
 
 const SCHOOL = {
-  name: 'Les Yeux du Coeur', sub: 'Bilingual Nursery & Primary School', addr: 'Isokolo Old Road, Limbe',
-  motto: 'The Best Is Our Goal', motto2: "Le Meilleur C'est Notre But", tel: '6 99 94 36 00'
+  name: 'Les Yeux du Coeur', sub: 'Bilingual Nursery & Primary School', addr: 'Isokolo – Bota Land – Limbe II',
+  motto: 'The Best Is Our Goal', motto2: "Le Meilleur C'est Notre But", tel: '678 92 11 85 / 699 94 36 00',
+  email: 'lyclimbe@yahoo.com', auth: '119/A/5011/0/MINEDUB/SG/DESEP/SDAAP of 01 July 2015'
 };
+/* School brochure 2026-2027 */
+const START_Y = (() => { const d = new Date(), y = d.getFullYear(); return d.getMonth() >= 8 ? y : y - 1; })();
+const BROCHURE_FEES = {
+  nursery: {reg: 10000, inst1: 40000, inst2: 15000, exam: 0, art: 5000},
+  primary: {reg: 10000, inst1: 40000, inst2: 10000, exam: 0, art: 5000},
+  c6: {reg: 10000, inst1: 40000, inst2: 10000, exam: 15000, art: 5000}
+};
+const brochureFee = lv => lv === 'C6' ? BROCHURE_FEES.c6 : ['PN', 'N1', 'N2'].includes(lv) ? BROCHURE_FEES.nursery : BROCHURE_FEES.primary;
+const PUPIL_HOURS = lv => lv === 'C6' ? ['07:30', '17:00'] : ['PN', 'N1', 'N2'].includes(lv) ? ['07:30', '13:00'] : ['07:30', '14:30'];
+const FEE_PARTS = [['reg', 'Inscription', 'Registration'], ['inst1', 'Scolarité 1re tranche', 'Tuition 1st inst.'], ['inst2', 'Scolarité 2e tranche', 'Tuition 2nd inst.'], ['exam', 'Examen', 'Examination'], ['art', 'Articles', 'Articles']];
 const LEVELS = [
   {id:'PN', name:'Pre-Nursery', sec:'nursery'}, {id:'N1', name:'Nursery 1', sec:'nursery'}, {id:'N2', name:'Nursery 2', sec:'nursery'},
   {id:'C1', name:'Class 1', sec:'primary'}, {id:'C2', name:'Class 2', sec:'primary'}, {id:'C3', name:'Class 3', sec:'primary'},
@@ -28,9 +39,15 @@ const TERMS = {1:'First Term', 2:'Second Term', 3:'Third Term'};
 const MARKS = () => ({P: T('Présent', 'Present'), A: T('Absent', 'Absent'), R: T('En retard', 'Late'), J: T('Absence justifiée', 'Excused absence')});
 const OBJECTS = [
   {k:'reg', fr:"Frais d'inscription", en:'Registration fee', fees:true},
-  {k:'t1', fr:'Scolarité – First Term', en:'School fees – First Term', fees:true},
-  {k:'t2', fr:'Scolarité – Second Term', en:'School fees – Second Term', fees:true},
-  {k:'t3', fr:'Scolarité – Third Term', en:'School fees – Third Term', fees:true},
+  {k:'inst1', fr:'Scolarité – 1re tranche', en:'Tuition – 1st installment', fees:true},
+  {k:'inst2', fr:'Scolarité – 2e tranche', en:'Tuition – 2nd installment', fees:true},
+  {k:'exam', fr:'Frais d’examen (Class 6)', en:'Examination fee (Class 6)', fees:true},
+  {k:'art', fr:'Articles', en:'Articles', fees:true},
+  {k:'pack1', fr:'1re tranche complète', en:'1st installment (all items)', fees:true},
+  {k:'sport', fr:'Tenue de sport', en:'Sportswear', price: 3500},
+  {k:'t1', fr:'Scolarité – First Term', en:'School fees – First Term', fees:true, old:true},
+  {k:'t2', fr:'Scolarité – Second Term', en:'School fees – Second Term', fees:true, old:true},
+  {k:'t3', fr:'Scolarité – Third Term', en:'School fees – Third Term', fees:true, old:true},
   {k:'uni', fr:'Uniforme', en:'Uniform'},
   {k:'books', fr:'Fournitures et livres', en:'Books and stationery'},
   {k:'transport', fr:'Transport', en:'Transport'},
@@ -105,18 +122,21 @@ const S = {
 };
 const cfg = () => S.config || {};
 const teacherOf = lv => (cfg().teachers || {})[lv] || '';
-const feesOf = lv => { const f = (cfg().fees || {})[lv] || {}; return {reg:+f.reg||0, t1:+f.t1||0, t2:+f.t2||0, t3:+f.t3||0}; };
-const feesSet = () => Object.values(cfg().fees || {}).some(f => (+f.reg||0)+(+f.t1||0)+(+f.t2||0)+(+f.t3||0) > 0);
+const feesOf = lv => { const c = cfg(), f = c.feeModel === 2 && c.fees && c.fees[lv] ? c.fees[lv] : brochureFee(lv); return {reg: +f.reg || 0, inst1: +f.inst1 || 0, inst2: +f.inst2 || 0, exam: +f.exam || 0, art: +f.art || 0}; };
+const due1 = () => cfg().due1 || `${START_Y}-10-10`;
+const due2 = () => cfg().due2 || `${START_Y + 1}-01-10`;
+const firstInst = f => f.reg + f.inst1 + f.exam + f.art;
+const feesSet = () => true;
 const activeStudents = () => S.students.filter(s => s.status !== 'left').sort((a,b) => a.name.localeCompare(b.name, 'fr'));
 const byLevel = lv => activeStudents().filter(s => s.level === lv);
 const student = id => S.students.find(s => s.id === id);
 const ROLE_NAME = () => ({president: T('Président', 'Chairman'), vicepresident: T('Vice-président', 'Vice-chairman'), direction: T('Directrice', 'Head teacher'), assistant: T('Assistante directrice', 'Assistant head teacher'), teacher: T('Enseignant titulaire', 'Class teacher'), accountant: T('Comptable', 'Bursar'), secretary: T('Secrétaire', 'Secretary'), parent: T('Parent', 'Parent')});
 
 function feeStatus(s) {
-  const f = feesOf(s.level), term = termOf(today()), disc = +s.discount || 0;
-  const total = Math.max(0, f.reg + f.t1 + f.t2 + f.t3 - disc);
-  let due = f.reg + f.t1 + (term >= 2 ? f.t2 : 0) + (term >= 3 ? f.t3 : 0);
-  due = Math.max(0, Math.min(total, due - disc));
+  const f = feesOf(s.level), d = today(), disc = +s.discount || 0;
+  const total = Math.max(0, firstInst(f) + f.inst2 - disc);
+  let due = f.reg + (d > due1() ? f.inst1 + f.exam + f.art : 0) + (d > due2() ? f.inst2 : 0);
+  due = Math.max(0, Math.min(total, due - (d > due2() ? disc : 0)));
   const paid = S.payments.filter(p => p.studentId === s.id && !p.cancelled && OBJ[p.object]?.fees).reduce((a, p) => a + (+p.amount || 0), 0);
   return {total, due, paid, balance: Math.max(0, total - paid), late: Math.max(0, due - paid)};
 }
@@ -241,7 +261,7 @@ const ROLE_TABS = () => withMgr({
   teacher: [['appel', T('Appel', 'Roll call'), 'check'], ['eleves', T('Élèves', 'Pupils'), 'kids'], ['messages', T('Messages', 'Messages'), 'msg'], ['profil', T('Profil', 'Profile'), 'user']],
   accountant: [['encaisser', T('Encaisser', 'Collect'), 'money'], ['impayes', T('Impayés', 'Arrears'), 'alert'], ['recus', T('Reçus', 'Receipts'), 'receipt'], ['profil', T('Profil', 'Profile'), 'user']],
   secretary: [['pointage', T('Pointage', 'Sign-in'), 'clock'], ['eleves', T('Inscriptions', 'Enrolment'), 'kids'], ['profil', T('Profil', 'Profile'), 'user']],
-  parent: [['enfant', T('Mon enfant', 'My child'), 'kids'], ['messages', T('Messages', 'Messages'), 'msg'], ['profil', T('Profil', 'Profile'), 'user']]
+  parent: [['enfant', T('Mon enfant', 'My child'), 'kids'], ['messages', T('Messages', 'Messages'), 'msg'], ['ecole', T('L’école', 'School'), 'home'], ['profil', T('Profil', 'Profile'), 'user']]
 });
 
 function render() {
@@ -249,7 +269,7 @@ function render() {
   const p = S.profile;
   if (!p) { app.innerHTML = viewGate(); return; }
   const tabs = ROLE_TABS()[p.role];
-  const extra = isMgr(p.role) ? ['eleves','stats','profil','encaisser','impayes','recus','personnel', ...(isAdmin(p.role) ? ['reglages','acces'] : [])] : ['profil','eleves'];
+  const extra = isMgr(p.role) ? ['eleves','stats','profil','encaisser','impayes','recus','personnel','ecole', ...(isAdmin(p.role) ? ['reglages','acces'] : [])] : ['profil','eleves','ecole'];
   if (!S.view || !tabs.some(t => t[0] === S.view) && !extra.includes(S.view)) S.view = tabs[0][0];
   const sub = p.role === 'teacher' ? `${LV[p.level]?.name || ''} · ${esc(p.name || '')}`
     : p.role === 'parent' ? `${T('Parent', 'Parent')} · ${esc(parentKids()[0]?.parentName || p.phone || '')}` : `${ROLE_NAME()[p.role]} · ${esc(p.name || '')}`;
@@ -268,7 +288,7 @@ function render() {
     ${viewBody()}
   </div></main>
   <nav class="tabs" aria-label="${T('Navigation', 'Navigation')}"><div class="in">
-    ${tabs.map(([id, label, ic]) => `<button data-a="tab" data-v="${id}" ${S.view === id || (id === 'plus' && ['eleves','stats','reglages','profil','impayes','recus','personnel','acces'].includes(S.view)) || (id === 'frais' && S.view === 'encaisser') ? 'aria-current="page"' : ''}><span class="dot" ${id === 'messages' && unread ? `data-n="${unread}"` : ''}>${ICON[ic]}</span>${label}</button>`).join('')}
+    ${tabs.map(([id, label, ic]) => `<button data-a="tab" data-v="${id}" ${S.view === id || (id === 'plus' && ['eleves','stats','reglages','profil','impayes','recus','personnel','ecole','acces'].includes(S.view)) || (id === 'frais' && S.view === 'encaisser') ? 'aria-current="page"' : ''}><span class="dot" ${id === 'messages' && unread ? `data-n="${unread}"` : ''}>${ICON[ic]}</span>${label}</button>`).join('')}
   </div></nav>
   ${S.sheet ? sheetHTML() : ''}`;
   window.scrollTo(0, scrollY);
@@ -278,7 +298,7 @@ const allLoaded = () => S.dbOk !== true || Object.values(S.loaded).every(Boolean
 function viewBody() {
   if (S.dbOk === null || (S.dbOk && !allLoaded())) return `<div class="panel empty"><b>${T('Chargement des données…', 'Loading school data…')}</b></div>`;
   const map = {home:viewHome, appel:viewAppel, frais:viewFrais, messages:viewMessages, plus:viewPlus, eleves:viewEleves, stats:viewStats,
-    reglages:viewReglages, profil:viewProfil, personnel:viewPersonnel, acces:viewAcces, pointage:viewPointage, encaisser:viewEncaisser, impayes:viewImpayes, recus:viewRecus, enfant:viewEnfant};
+    reglages:viewReglages, profil:viewProfil, ecole:viewEcole, personnel:viewPersonnel, acces:viewAcces, pointage:viewPointage, encaisser:viewEncaisser, impayes:viewImpayes, recus:viewRecus, enfant:viewEnfant};
   return (map[S.view] || viewHome)();
 }
 
@@ -429,8 +449,8 @@ function sheetAcc(id) {
 }
 
 /* ----- staff time & attendance ----- */
-const startTime = () => cfg().startTime || '07:30';
-const endTime = () => cfg().endTime || '15:30';
+const startTime = () => cfg().hoursModel === 2 && cfg().startTime || '07:00';
+const endTime = () => cfg().hoursModel === 2 && cfg().endTime || '15:00';
 const staffDocId = ds => `${YEAR}_${ds}`;
 const hmNow = () => { const d = new Date(); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
 const toMin = t => { const [h, m] = String(t || '').split(':').map(Number); return isNaN(h) ? null : h * 60 + (m || 0); };
@@ -654,7 +674,7 @@ function sheetVerify(v) {
     let detail = '';
     if (s) { const a = S.att[attKey(s.level, today())], m = a?.marks?.[s.id]; const f = (isMgr() || role === 'accountant') && feesSet() ? feeStatus(s) : null;
       detail = `<div class="panel" style="padding:14px;display:flex;gap:14px;align-items:flex-start">${photoBox(s, 110)}<div style="display:flex;flex-direction:column;gap:4px;min-width:0"><b style="font-family:var(--f-display);font-size:1.25rem">${esc(s.name)}</b><span>${LV[s.level]?.name} · ${YEAR}</span>${s.birth ? `<span class="small muted">${T('Né(e) le', 'Born')} ${frDate(s.birth)}</span>` : ''}<span class="small">${T('Parent', 'Parent')} : <b>${esc(s.parentName || '—')}</b> · ${esc(s.parentPhone || '')}</span>
-        <span class="small">${T('Aujourd’hui', 'Today')} : ${m ? `<b>${MARKS()[m]}</b>` : T('appel pas encore fait', 'roll call not taken yet')}</span>${f ? `<span class="small">${T('Frais', 'Fees')} : ${f.late ? `<b style="color:var(--stamp)">${money(f.late)} ${T('échus', 'due')}</b>` : `<b style="color:var(--good)">${T('à jour', 'up to date')}</b>`}</span>` : ''}</div></div>
+        <span class="small">${T('Aujourd’hui', 'Today')} : ${m ? `<b>${MARKS()[m]}</b>` : T('appel pas encore fait', 'roll call not taken yet')}</span><span class="small">${T('Fin des cours', 'Classes end')} : <b>${PUPIL_HOURS(s.level)[1]}</b></span>${f ? `<span class="small">${T('Frais', 'Fees')} : ${f.late ? `<b style="color:var(--stamp)">${money(f.late)} ${T('échus', 'due')}</b>` : `<b style="color:var(--good)">${T('à jour', 'up to date')}</b>`}</span>` : ''}</div></div>
         <div class="btns"><button class="btn" data-a="student" data-v="${s.id}">${T('Voir la fiche', 'Open record')}</button>${f ? `<button class="btn" data-a="pay" data-v="${s.id}">${T('Encaisser', 'Record payment')}</button>` : ''}</div>`; }
     return `<div style="background:${tint};color:${color};border-radius:var(--r);padding:16px;font-weight:800;font-size:1.1rem;display:flex;gap:10px;align-items:center"><span style="font-size:1.6rem" aria-hidden="true">${r.ok ? '✓' : '✕'}</span><span>${r.msg}</span></div>
       ${detail}<button class="btn primary" data-a="scan">${T('Vérifier une autre carte', 'Check another card')}</button>`; }};
@@ -866,7 +886,7 @@ function viewAppel() {
   <div class="section"><div class="section-head"><h2>${p.role === 'teacher' ? T('Appel de ', 'Roll call · ') + LV[lv].name : T('Présences', 'Attendance')}</h2>${doc ? `<span class="chip green">${T('Enregistré', 'Saved')} ${doc.savedAt ? T('à ', 'at ') + hhmm(doc.savedAt) : ''}</span>` : `<span class="chip grey">${T('Pas encore fait', 'Not done yet')}</span>`}</div>
     ${p.role !== 'teacher' ? `<div class="seg" role="group" aria-label="${T('Classe', 'Class')}">${LEVELS.map(l => `<button data-a="ap-level" data-v="${l.id}" aria-pressed="${l.id === lv}">${l.name}</button>`).join('')}</div>` : ''}
     <div class="grid2"><label class="f">${T('Date', 'Date')}<input type="date" id="ap-date" value="${ds}" max="${today()}" data-change="ap-date"></label>
-      <div class="f" style="justify-content:flex-end"><span class="small muted">${cap(longDay(ds))} · ${TERMS[termOf(ds)]}</span></div></div>
+      <div class="f" style="justify-content:flex-end"><span class="small muted">${cap(longDay(ds))} · ${TERMS[termOf(ds)]}<br>${T('Horaires de la classe', 'Class hours')} : ${PUPIL_HOURS(lv).join(' – ')}</span></div></div>
   </div>
   ${kids.length === 0 ? `<div class="panel empty"><b>${T('Aucun élève dans ', 'No pupils in ')}${LV[lv].name}</b><span>${p.role === 'teacher' ? T('La direction doit d’abord inscrire les élèves de la classe.', 'The head office must first register the pupils of this class.') : T('Ajoutez les élèves de cette classe pour faire l’appel.', 'Add the pupils of this class to take the roll call.')}</span>${p.role !== 'teacher' ? `<button class="btn primary" data-a="add-student" data-v="${lv}">${T('Ajouter des élèves', 'Add pupils')}</button>` : ''}</div>` : `
   <div class="section">
@@ -919,7 +939,7 @@ function viewFrais() {
       <div class="kpi"><span class="v">${money(G)}</span><span class="l">${T('encaissés sur l’année', 'collected this year')}</span></div>
       <div class="kpi"><span class="v">${money(Math.max(0, E - G))}</span><span class="l">${T('restant à percevoir', 'still to collect')}</span></div>
       <div class="kpi"><span class="v">${money(E)}</span><span class="l">${T('attendus pour l’année', 'expected for the year')}</span></div>
-      <div class="kpi"><span class="v">${money(termGot)}</span><span class="l">${T('encaissés ce trimestre', 'collected this term')} (${TERMS[term]})</span></div>
+      <div class="kpi"><span class="v">${frDate(today() <= due1() ? due1() : due2())}</span><span class="l">${T('prochaine date limite de paiement', 'next payment deadline')}</span></div>
     </div>
   </div>
   <div class="section"><h3>${T('Par classe', 'By class')}</h3><div class="panel tbl"><table><thead><tr><th>${T('Classe', 'Class')}</th><th>${T('Élèves', 'Pupils')}</th><th>${T('Encaissé', 'Collected')}</th><th>${T('Taux', 'Rate')}</th><th>${T('En retard', 'Behind')}</th></tr></thead><tbody>
@@ -960,7 +980,7 @@ function viewImpayes() {
   const total = rows.reduce((a, x) => a + x.f.late, 0);
   return `
   <div class="section"><div class="section-head"><h2>${T('Impayés', 'Arrears')}</h2><span class="chip red num">${money(total)}</span></div>
-    <p class="small muted" style="margin:0">${T('Montants échus à ce jour', 'Amounts due to date')} (${TERMS[termOf(today())]}) ${T('et non payés.', 'and not yet paid.')}</p>
+    <p class="small muted" style="margin:0">${T(`Montants échus et non payés. Dates limites : 1re tranche le ${frDate(due1())}, 2e tranche le ${frDate(due2())}.`, `Amounts due and not paid. Deadlines: 1st installment ${frDate(due1())}, 2nd installment ${frDate(due2())}.`)}</p>
     <div class="seg" role="group" aria-label="${T('Classe', 'Class')}"><button data-a="imp-level" data-v="all" aria-pressed="${lv === 'all'}">${T('Toutes', 'All')}</button>${LEVELS.map(l => `<button data-a="imp-level" data-v="${l.id}" aria-pressed="${l.id === lv}">${l.name}</button>`).join('')}</div>
   </div>
   ${!feesSet() ? `<div class="panel empty"><b>${T('Frais non fixés', 'Fees not set')}</b><span>${T('La direction doit d’abord renseigner les montants dans les réglages.', 'The head office must first enter the amounts in Settings.')}</span></div>` :
@@ -1034,7 +1054,7 @@ function viewEnfant() {
   return `
   ${kids.length > 1 ? `<div class="seg" role="group" aria-label="${T('Enfant', 'Child')}">${kids.map(x => `<button data-a="kid" data-v="${x.id}" aria-pressed="${x.id === k.id}">${esc(x.name.split(' ')[0])}</button>`).join('')}</div>` : ''}
   <div style="display:flex;gap:14px;align-items:center">${photoBox(k, 64)}<div class="section" style="flex:1;min-width:0"><div class="section-head"><h2>${esc(k.name)}</h2><span class="chip blue">${LV[k.level]?.name}</span></div>
-    <span class="small muted">${T('Enseignant titulaire', 'Class teacher')} : ${esc(teacherOf(k.level) || T('à renseigner par l’école', 'not set yet'))}</span></div></div>
+    <span class="small muted">${T('Enseignant titulaire', 'Class teacher')} : ${esc(teacherOf(k.level) || T('à renseigner par l’école', 'not set yet'))}</span><span class="small muted">${T('Horaires', 'School hours')} : ${PUPIL_HOURS(k.level).join(' – ')}</span></div></div>
   <button class="btn" data-a="card" data-v="${k.id}">${ICON.qr} ${T('Carte d’élève à présenter', 'Pupil’s card to show')}</button>
   <div class="section"><h3>${T('Présences', 'Attendance')} · ${TERMS[term]}</h3>
     <div class="kpis"><div class="kpi"><span class="v">${c.days ? Math.round((c.P + c.R) / c.days * 100) + ' %' : '—'}</span><span class="l">${T('présence sur ', 'present over ')}${pl(c.days, 'jour', 'jours', 'day', 'days')}</span></div>
@@ -1045,7 +1065,8 @@ function viewEnfant() {
     ${feesSet() ? `<div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:10px">
       <div class="section-head"><span>${T('Payé', 'Paid')} <b class="num">${money(f.paid)}</b></span><span class="muted small num">${T('sur', 'of')} ${money(f.total)}</span></div>
       <div class="bar"><i style="width:${f.total ? Math.min(100, f.paid / f.total * 100) : 0}%"></i></div>
-      ${f.late ? `<div class="banner red small">${T('Montant échu à régler', 'Amount now due')} : <b class="num">${money(f.late)}</b></div>` : `<div class="banner info small">${T(`Vous êtes à jour pour le ${TERMS[term]}. Reste pour l’année`, `You are up to date for the ${TERMS[term]}. Left for the year`)} : <b class="num">${money(f.balance)}</b>.</div>`}
+      ${f.late ? `<div class="banner red small">${T('Montant échu à régler', 'Amount now due')} : <b class="num">${money(f.late)}</b></div>` : `<div class="banner info small">${T('Vous êtes à jour. Reste pour l’année', 'You are up to date. Left for the year')} : <b class="num">${money(f.balance)}</b>${f.balance ? T(`, avant le ${frDate(today() <= due1() ? due1() : due2())}`, `, by ${frDate(today() <= due1() ? due1() : due2())}`) : ''}.</div>`}
+      ${feeBreakdown(k.level)}
       <span class="small muted">${T('Paiement au guichet de l’école, ou par Orange Money / MTN Mobile Money. Tél. de l’école', 'Pay at the school office, or by Orange Money / MTN Mobile Money. School phone')} : <b>${SCHOOL.tel}</b></span>
     </div>` : `<div class="panel empty">${T('Les montants des frais seront affichés dès que l’école les aura saisis.', 'Fee amounts will show here once the school has entered them.')}</div>`}
   </div>
@@ -1067,8 +1088,44 @@ function viewEleves() {
 }
 
 /* ----- direction: more, settings, profile ----- */
+function feeBreakdown(lv) {
+  const f = feesOf(lv), parts = FEE_PARTS.filter(([k]) => f[k]);
+  return `<div class="tbl"><table><thead><tr><th>${T('Frais', 'Item')}</th><th>${T('1re tranche', '1st inst.')}</th><th>${T('2e tranche', '2nd inst.')}</th><th>Total</th></tr></thead><tbody>
+    ${parts.map(([k, fr, en]) => { const second = k === 'inst2'; const lab = k === 'inst1' || k === 'inst2' ? T('Scolarité', 'Tuition') : T(fr, en); return {k, lab, second}; }).filter(x => x.k !== 'inst2').map(x => x.k === 'inst1'
+      ? `<tr><td>${T('Scolarité', 'Tuition')}</td><td>${money(f.inst1)}</td><td>${f.inst2 ? money(f.inst2) : '/'}</td><td>${money(f.inst1 + f.inst2)}</td></tr>`
+      : `<tr><td>${x.lab}</td><td>${money(f[x.k])}</td><td>/</td><td>${money(f[x.k])}</td></tr>`).join('')}
+    <tr><td><b>Total</b></td><td><b>${money(firstInst(f))}</b></td><td><b>${money(f.inst2)}</b></td><td><b>${money(firstInst(f) + f.inst2)}</b></td></tr>
+    <tr><td class="small muted">${T('Date limite', 'Deadline')}</td><td class="small muted">${frDate(due1())}</td><td class="small muted">${frDate(due2())}</td><td></td></tr>
+  </tbody></table></div>`;
+}
+function viewEcole() {
+  const groups = [['nursery', T('Maternelle (Pre-Nursery, Nursery 1 et 2)', 'Nursery (Pre-Nursery, Nursery 1 & 2)'), 'N1'], ['primary', T('Primaire, Class 1 à 5', 'Primary, Class 1 to 5'), 'C1'], ['c6', T('Primaire, Class 6', 'Primary, Class 6'), 'C6']];
+  const li = a => `<ul style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:4px">${a.map(x => `<li>${x}</li>`).join('')}</ul>`;
+  return `
+  <div class="section"><div style="display:flex;gap:14px;align-items:center"><div class="logo-tile" style="width:84px;height:56px"><img src="${LOGO}" alt="" style="width:76px"></div><div><h2>${SCHOOL.name}</h2><span class="small muted">Les Yeux du Cœur / Eyes of the Heart · Bilingual Nursery and Primary School (L.Y.C)</span></div></div>
+    <div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:4px" >
+      <span class="small">${T('Ministère de l’Éducation de base · Autorisation N°', 'Ministry of Basic Education · Authorisation N°')} ${SCHOOL.auth}</span>
+      <span>${T('Adresse', 'Address')} : <b>${SCHOOL.addr}</b>, ${T('Cameroun', 'Cameroon')}</span>
+      <span>${T('Téléphone', 'Phone')} : <b>(+237) ${SCHOOL.tel}</b></span>
+      <span>E-mail : <b>${SCHOOL.email}</b></span>
+      <i class="muted">Motto : ${SCHOOL.motto} · ${SCHOOL.motto2}</i>
+    </div></div>
+  <div class="section"><h3>${T('Horaires', 'Opening hours')}</h3><div class="panel tbl"><table><thead><tr><th>${T('Classe', 'Class')}</th><th>${T('Horaires', 'Time')}</th></tr></thead><tbody>
+    <tr><td>${T('Maternelle', 'Nursery')}</td><td>07:30 – 13:00</td></tr><tr><td>Primary (1-5)</td><td>07:30 – 14:30</td></tr><tr><td>Primary 6</td><td>07:30 – 17:00</td></tr><tr><td>${T('Personnel enseignant', 'Teaching staff')}</td><td>${startTime()} – ${endTime()}</td></tr>
+  </tbody></table></div></div>
+  <div class="section"><h3>${T('Frais de scolarité', 'School fees')} ${YEAR}</h3>
+    ${groups.map(([g, name, lv]) => `<div class="panel" style="padding:12px 14px;display:flex;flex-direction:column;gap:6px"><b>${name}</b>${feeBreakdown(lv)}</div>`).join('')}
+    <p class="small muted" style="margin:0">${T('Ces frais ne comprennent pas les livres : une liste est remise aux parents pour les acheter en librairie, ou s’adresser à la secrétaire. Tenue de sport disponible à l’école : 3 500 F.', 'These fees do not include books: a booklist is given to parents to buy from bookshops, or contact the secretary. Sportswear available in school: 3 500 F.')}</p></div>
+  <div class="section"><h3>${T('Conditions d’admission', 'Admission requirements')}</h3><div class="panel" style="padding:14px">${li([T('Chemise cartonnée', 'File jacket'), T('Photocopie de l’acte de naissance', 'Photocopy of birth certificate'), T('Photocopie du carnet de vaccination (maternelle)', 'Photocopy of vaccination card for nursery'), T('Bulletin scolaire pour les nouveaux élèves', 'Report card for new pupils')])}</div></div>
+  <div class="section"><h3>${T('Formalités d’inscription : à apporter', 'Registration formalities: to bring')}</h3><div class="panel" style="padding:14px">${li([T('Photocopie de l’acte de naissance (1)', 'Photocopy of birth certificate (01)'), T('Chemise cartonnée (1)', 'File jacket (01)'), T('Rame de papier (1)', 'Ream of papers (01)'), T('Rouleaux de papier hygiénique (3)', 'Rolls of toilet paper (03)'), T('Savon en cube (1)', 'Soap cubes (01)'), T('Uniformes scolaires (2)', 'School uniforms (02)'), T('Tenue de sport (1)', 'Set of sportswear (01)')])}</div></div>
+  <div class="section"><h3>${T('Uniformes', 'Uniforms')}</h3><div class="grid2">
+    <div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:6px"><b>${T('Garçons', 'Boys')}</b>${li([T('2 chemises blanches, col et poche roses', '2 white shirts with pink collar and pink pocket'), T('Chaussures ou sandales noires', 'Black shoes or sandals'), T('Chaussettes blanches', 'White socks'), T('Tenue de sport à l’école (3 500 F)', 'Sportswear available in school (3 500 F)')])}</div>
+    <div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:6px"><b>${T('Filles', 'Girls')}</b>${li([T('2 chemisiers blancs à pèlerine', '2 white blouses with cape'), T('2 jupes-chasubles roses', '2 pink pinafore skirts'), T('Chaussures ou sandales noires', 'Black shoes or sandals'), T('Chaussettes blanches', 'White socks'), T('Tenue de sport à l’école (3 500 F)', 'Sportswear available in school (3 500 F)'), T('Tenue de cérémonie : modèle à l’école', 'Ceremonial wear: sample in school')])}</div>
+  </div></div>
+  <div class="section"><h3>${T('Coiffure', 'Hairstyle')}</h3><div class="panel" style="padding:14px">${li([T('Garçons : cheveux proprement rasés', 'Boys: neatly shaved hair'), T('Filles : tresses nettes (bakala), sans mèches ajoutées', 'Girls: neat cornrows (bakala), no mesh attached')])}</div></div>`;
+}
 function viewPlus() {
-  const items = [['eleves', T('Élèves', 'Pupils'), T('Inscriptions, fiches et parents', 'Enrolment, records and parents'), 'kids'], ['stats', T('Statistiques comparées', 'Year-on-year statistics'), T('Effectifs et résultats Common Entrance / FSLC', 'Enrolment and Common Entrance / FSLC results'), 'stats'], ['recus', T('Reçus', 'Receipts'), T('Tous les reçus de l’année', 'All receipts this year'), 'receipt'], ['impayes', T('Impayés', 'Arrears'), T('Relancer les familles', 'Remind families'), 'alert'], ['acces', T('Accès à l’application', 'App access'), T('Comptes, codes et envoi par WhatsApp', 'Accounts, codes and sending by WhatsApp'), 'user'], ['personnel', T('Présences du personnel', 'Staff attendance'), T('Arrivées, départs et retards des enseignants et de la directrice', 'Arrival, departure and lateness of teachers and head teacher'), 'clock'], ['reglages', T('Réglages', 'Settings'), T('Frais, enseignants, seuil d’absences', 'Fees, teachers, absence threshold'), 'gear'], ['profil', T('Mon profil', 'My profile'), T('Changer de profil', 'Change profile'), 'user']];
+  const items = [['ecole', T('L’école : brochure', 'School: brochure'), T('Horaires, frais, admission, uniformes', 'Hours, fees, admission, uniforms'), 'home'], ['eleves', T('Élèves', 'Pupils'), T('Inscriptions, fiches et parents', 'Enrolment, records and parents'), 'kids'], ['stats', T('Statistiques comparées', 'Year-on-year statistics'), T('Effectifs et résultats Common Entrance / FSLC', 'Enrolment and Common Entrance / FSLC results'), 'stats'], ['recus', T('Reçus', 'Receipts'), T('Tous les reçus de l’année', 'All receipts this year'), 'receipt'], ['impayes', T('Impayés', 'Arrears'), T('Relancer les familles', 'Remind families'), 'alert'], ['acces', T('Accès à l’application', 'App access'), T('Comptes, codes et envoi par WhatsApp', 'Accounts, codes and sending by WhatsApp'), 'user'], ['personnel', T('Présences du personnel', 'Staff attendance'), T('Arrivées, départs et retards des enseignants et de la directrice', 'Arrival, departure and lateness of teachers and head teacher'), 'clock'], ['reglages', T('Réglages', 'Settings'), T('Frais, enseignants, seuil d’absences', 'Fees, teachers, absence threshold'), 'gear'], ['profil', T('Mon profil', 'My profile'), T('Changer de profil', 'Change profile'), 'user']];
   return `<div class="section"><h2>${T('Plus', 'More')}</h2><div class="panel rows">${items.filter(i => isAdmin() || !['reglages', 'acces'].includes(i[0])).map(i => `<button class="row" data-a="tab" data-v="${i[0]}"><span style="color:var(--carbon)">${ICON[i[3]]}</span><span class="grow"><span class="name">${i[1]}</span><br><span class="small muted">${i[2]}</span></span></button>`).join('')}</div></div>`;
 }
 function viewReglages() {
@@ -1080,13 +1137,14 @@ function viewReglages() {
     <div class="section"><h3>${T('Enseignants titulaires', 'Class teachers')}</h3><div class="panel" style="padding:14px"><div class="grid2">
       ${LEVELS.map(l => `<label class="f">${l.name}<input id="t-${l.id}" name="t-${l.id}" value="${esc(t[l.id] || '')}" placeholder="${T('Nom de l’enseignant', 'Teacher’s name')}"></label>`).join('')}
     </div></div></div>
-    <div class="section"><h3>${T('Frais de scolarité (FCFA)', 'School fees (FCFA)')}</h3><p class="small muted" style="margin:0">${T('Inscription, puis montant dû pour chaque trimestre.', 'Registration, then the amount due for each term.')}</p>
-      <div class="panel tbl"><table><thead><tr><th>${T('Classe', 'Class')}</th><th>${T('Inscription', 'Registration')}</th><th>${T('1er trim.', 'Term 1')}</th><th>${T('2e trim.', 'Term 2')}</th><th>${T('3e trim.', 'Term 3')}</th></tr></thead><tbody>
-      ${LEVELS.map(l => { const f = fees[l.id] || {}; return `<tr><td>${l.name}</td>${['reg','t1','t2','t3'].map(k => `<td><input id="f-${l.id}-${k}" name="f-${l.id}-${k}" inputmode="numeric" value="${f[k] ?? ''}" style="min-width:96px;text-align:right" aria-label="${l.name} ${k}"></td>`).join('')}</tr>`; }).join('')}
+    <div class="section"><h3>${T('Frais de scolarité (FCFA)', 'School fees (FCFA)')}</h3><p class="small muted" style="margin:0">${T('Montants de la brochure 2026-2027, modifiables. La 1re tranche regroupe inscription, scolarité 1re partie, examen et articles.', 'Amounts from the 2026-2027 brochure, editable. The 1st installment covers registration, tuition part 1, examination and articles.')}</p>
+      <div class="panel tbl"><table><thead><tr><th>${T('Classe', 'Class')}</th>${FEE_PARTS.map(p => `<th>${T(p[1], p[2])}</th>`).join('')}<th>Total</th></tr></thead><tbody>
+      ${LEVELS.map(l => { const f = feesOf(l.id); return `<tr><td>${l.name}</td>${FEE_PARTS.map(([k]) => `<td><input id="f-${l.id}-${k}" name="f-${l.id}-${k}" inputmode="numeric" value="${f[k]}" style="min-width:86px;text-align:right" aria-label="${l.name} ${k}"></td>`).join('')}<td><b>${money(firstInst(f) + f.inst2)}</b></td></tr>`; }).join('')}
       </tbody></table></div>
-      <button class="btn sm" type="button" data-a="copy-fees">${T('Copier Class 1 vers Class 2 à 6', 'Copy Class 1 to Classes 2 to 6')}</button>
+      <div class="grid2"><label class="f">${T('Date limite 1re tranche', '1st installment deadline')}<input id="due1" name="due1" type="date" value="${due1()}"></label><label class="f">${T('Date limite 2e tranche', '2nd installment deadline')}<input id="due2" name="due2" type="date" value="${due2()}"></label></div>
+      <button class="btn sm" type="button" data-a="brochure-fees">${T('Remettre les tarifs de la brochure', 'Reset to brochure fees')}</button>
     </div>
-    <div class="section"><h3>${T('Personnel', 'Staff')}</h3><div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:10px"><label class="f">${T('Nom de la directrice', 'Head teacher’s name')}<input id="dir-name" name="dir-name" value="${esc(c.directorName || '')}"></label><div class="grid2"><label class="f">${T('Assistante directrice', 'Assistant head teacher')}<input id="adj-name" name="adj-name" value="${esc(c.assistantName || '')}"></label><label class="f">${T('Secrétaire', 'Secretary')}<input id="sec-name" name="sec-name" value="${esc(c.secretaryName || '')}"></label></div><div class="grid2"><label class="f">${T('Heure d’arrivée attendue', 'Expected arrival')}<input id="start-t" name="start-t" type="time" value="${c.startTime || '07:30'}"></label><label class="f">${T('Heure de départ attendue', 'Expected departure')}<input id="end-t" name="end-t" type="time" value="${c.endTime || '15:30'}"></label></div><label class="f">${T('Écart toléré entre le pointage et la secrétaire (minutes)', 'Allowed gap between clock-in and secretary (minutes)')}<input id="gap-t" name="gap-t" type="number" min="1" value="${c.gapTolerance || 10}"></label></div></div>
+    <div class="section"><h3>${T('Personnel', 'Staff')}</h3><div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:10px"><label class="f">${T('Nom de la directrice', 'Head teacher’s name')}<input id="dir-name" name="dir-name" value="${esc(c.directorName || '')}"></label><div class="grid2"><label class="f">${T('Assistante directrice', 'Assistant head teacher')}<input id="adj-name" name="adj-name" value="${esc(c.assistantName || '')}"></label><label class="f">${T('Secrétaire', 'Secretary')}<input id="sec-name" name="sec-name" value="${esc(c.secretaryName || '')}"></label></div><div class="grid2"><label class="f">${T('Heure d’arrivée attendue', 'Expected arrival')}<input id="start-t" name="start-t" type="time" value="${startTime()}"></label><label class="f">${T('Heure de départ attendue', 'Expected departure')}<input id="end-t" name="end-t" type="time" value="${endTime()}"></label></div><label class="f">${T('Écart toléré entre le pointage et la secrétaire (minutes)', 'Allowed gap between clock-in and secretary (minutes)')}<input id="gap-t" name="gap-t" type="number" min="1" value="${c.gapTolerance || 10}"></label></div></div>
     <div class="section"><h3>${T('Présences', 'Attendance')}</h3><label class="f">${T('Alerter la direction à partir de', 'Alert the head office from')}<span class="hint">${T('nombre d’absences dans le trimestre', 'number of absences in the term')}</span><input id="abs-th" name="abs-th" type="number" min="1" value="${c.absenceThreshold || 5}"></label></div>
   </form>
   <div class="section"><h3>${T('Données d’exemple', 'Sample data')}</h3><div class="panel" style="padding:14px;display:flex;flex-direction:column;gap:8px">
@@ -1101,7 +1159,7 @@ function viewProfil() {
     <div class="row"><span class="grow"><span class="name">${T('Langue', 'Language')}</span><br><span class="small muted">${EN() ? 'English' : 'Français'}</span></span>${langBtn()}</div></div>
     <button class="btn" data-a="logout">${T('Se déconnecter', 'Sign out')}</button></div>
     ${myStaffKey() ? (() => { const o = staffMonth(myStaffKey(), today().slice(0, 7)); return `<div class="section"><h3>${T('Mes présences ce mois', 'My attendance this month')}</h3><div class="kpis"><div class="kpi"><span class="v">${o.present}</span><span class="l">${T('jours pointés', 'days clocked in')}</span></div><div class="kpi"><span class="v">${o.late}</span><span class="l">${T('retards', 'late arrivals')} · ${T('arrivée moy.', 'avg in')} ${o.avgIn}</span></div></div></div>`; })() : ''}
-    <div class="section"><h3>${T('L’école', 'The school')}</h3><div class="panel" style="padding:14px;display:flex;gap:14px;align-items:center">
+    <div class="section"><div class="section-head"><h3>${T('L’école', 'The school')}</h3><button class="btn ghost sm" data-a="tab" data-v="ecole">${T('Brochure', 'Brochure')}</button></div><div class="panel" style="padding:14px;display:flex;gap:14px;align-items:center">
       <div class="logo-tile" style="width:96px;height:64px"><img src="${LOGO}" alt="" style="width:88px"></div>
       <div class="small"><b>${SCHOOL.name}</b><br>${SCHOOL.sub}<br>${SCHOOL.addr}<br>Tel. ${SCHOOL.tel}<br><i class="muted">${EN() ? SCHOOL.motto : SCHOOL.motto2}</i></div></div></div>`;
 }
@@ -1201,12 +1259,12 @@ function sheetStudent(id) {
 }
 function sheetPay(id) {
   const s = student(id), f = feeStatus(s), term = termOf(today()), fr = feesOf(s.level);
-  const suggestObj = f.paid < fr.reg ? 'reg' : 't' + term;
+  const suggestObj = f.paid < firstInst(fr) ? 'pack1' : 'inst2';
   return {title: () => T('Encaisser un paiement', 'Record a payment'), body: () => `
     <div class="panel row"><span class="grow"><span class="name">${esc(s.name)}</span><br><span class="small muted">${LV[s.level].name}${feesSet() ? ` · ${T('reste', 'balance')} ${money(f.balance)}` : ''}</span></span></div>
     <form data-form="pay" data-id="${s.id}">
-      <label class="f">${T('Montant reçu (FCFA)', 'Amount received (FCFA)')}<input id="p-amount" name="amount" inputmode="numeric" required autofocus value="${f.late || ''}"></label>
-      <label class="f">${T('Objet du paiement', 'Payment for')} (« Being »)<select id="p-object" name="object">${OBJECTS.map(o => `<option value="${o.k}" ${o.k === suggestObj ? 'selected' : ''}>${objName(o.k)}</option>`).join('')}</select></label>
+      <label class="f">${T('Montant reçu (FCFA)', 'Amount received (FCFA)')}<input id="p-amount" name="amount" inputmode="numeric" required autofocus value="${f.late || (f.paid < firstInst(fr) ? Math.max(0, firstInst(fr) - f.paid) : f.balance) || ''}"></label>
+      <label class="f">${T('Objet du paiement', 'Payment for')} (« Being »)<select id="p-object" name="object" data-change="pay-obj" data-s="${s.id}">${OBJECTS.filter(o => !o.old).map(o => `<option value="${o.k}" ${o.k === suggestObj ? 'selected' : ''}>${objName(o.k)}</option>`).join('')}</select></label>
       <label class="f">${T('Précision', 'Details')}<span class="hint">${T('facultatif, imprimé sur le reçu', 'optional, printed on the receipt')}</span><input id="p-otext" name="objectText" placeholder="${T('Ex. 2 polos et 1 short', 'E.g. 2 polo shirts and 1 pair of shorts')}"></label>
       <div class="grid2"><label class="f">${T('Mode de paiement', 'Paid by')}<select id="p-method" name="method">${Object.entries(METHODS()).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
         <label class="f">${T('Référence', 'Reference')}<span class="hint">${T('n° de transaction', 'transaction no.')}</span><input id="p-ref" name="ref"></label></div>
@@ -1370,6 +1428,7 @@ const ACT = {
   'edit-student': d => openSheet(sheetStudentForm(student(d.v))),
   'sf-mode': d => { S.sfMode = d.v; refreshSheet(); },
   pay: d => openSheet(sheetPay(d.v)),
+  'pay-obj': () => {},
   receipt: d => { S.cancelling = null; openSheet(sheetReceipt(d.v)); },
   'rcpt-cancel': d => { S.cancelling = d.v; refreshSheet(); },
   'rcpt-dl': async d => { const p = S.payments.find(x => x.id === d.v); if (!p) return;
@@ -1387,7 +1446,7 @@ const ACT = {
       ['Common Entrance ' + T('candidats', 'candidates'), ...ys.map(y => y.ce?.cand ?? '')], ['Common Entrance ' + T('admis', 'passed'), ...ys.map(y => y.ce?.pass ?? '')], ['Common Entrance %', ...ys.map(y => rate(y.ce) ?? '')],
       ['FSLC ' + T('candidats', 'candidates'), ...ys.map(y => y.fslc?.cand ?? '')], ['FSLC ' + T('admis', 'passed'), ...ys.map(y => y.fslc?.pass ?? '')], ['FSLC %', ...ys.map(y => rate(y.fslc) ?? '')]];
     try { await saveFile(T('statistiques-LYC.csv', 'LYC-statistics.csv'), '﻿' + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(';')).join('\n'), 'text/csv'); } catch (e) { toast(T('Export impossible.', 'Export failed.')); } },
-  'copy-fees': () => { ['reg','t1','t2','t3'].forEach(k => { const v = document.getElementById(`f-C1-${k}`)?.value; ['C2','C3','C4','C5','C6'].forEach(l => { const i = document.getElementById(`f-${l}-${k}`); if (i) i.value = v; }); }); toast(T('Montants copiés, pensez à enregistrer', 'Amounts copied, remember to save')); },
+  'brochure-fees': () => { LEVELS.forEach(l => { const f = brochureFee(l.id); FEE_PARTS.forEach(([k]) => { const i = document.getElementById(`f-${l.id}-${k}`); if (i) i.value = f[k]; }); }); const a = document.getElementById('due1'), b = document.getElementById('due2'); if (a) a.value = `${START_Y}-10-10`; if (b) b.value = `${START_Y + 1}-01-10`; toast(T('Tarifs de la brochure remis, pensez à enregistrer', 'Brochure fees restored, remember to save')); },
   'demo-load': async () => { const first = ['Ngono','Tabi','Ewane','Fon','Mbah','Nkeng','Eyong','Ashu','Tanyi','Bih','Ngwa','Etta','Akwa','Njie','Ayuk','Che','Manga','Esua','Tchinda','Kum','Ebai','Nfor','Atem','Mokoko','Besong','Ndi','Tambe'];
     const given = ['Marie','John','Grace','Paul','Precious','Junior','Blessing','Emmanuel','Divine','Clarisse','Brandon','Princess','Samuel','Joy','Kevin','Cynthia','Daniel','Faith','Ivan','Linda','Eric','Mercy','Yannick','Sandra','Brian','Rita','Collins'];
     let i = 0; await write(async db => { for (const l of LEVELS) for (let k = 0; k < 3; k++, i++) await db.collection('students').doc('demo_' + l.id + k).set({name: `${first[i]} ${given[i]}`, level: l.id, sex: i % 2 ? 'M' : 'F', parentName: (i % 2 ? 'Mr ' : 'Mrs ') + first[i], parentPhone: '6' + String(70000000 + i * 1111111).slice(0, 8), phoneKey: '6' + String(70000000 + i * 1111111).slice(0, 8), status: 'active', demo: true, createdAt: nowISO(), qrKey: genKey()}); }, T('Exemples chargés (27 élèves)', 'Samples loaded (27 pupils)')); },
@@ -1402,6 +1461,8 @@ document.addEventListener('click', e => { const t = e.target.closest('[data-a]')
 document.addEventListener('change', e => { const t = e.target;
   if (t.dataset.change === 'aa-role') { S.aaRole = t.value; refreshSheet(); }
   if (t.dataset.change === 'qr-file') { scanFile(t); }
+  if (t.dataset.change === 'pay-obj') { const st = student(t.dataset.s), fr = st && feesOf(st.level), f = st && feeStatus(st), amt = document.getElementById('p-amount'); const v = t.value;
+    if (amt && fr) amt.value = v === 'sport' ? 3500 : v === 'pack1' ? Math.max(0, firstInst(fr) - f.paid) || '' : ['reg', 'inst1', 'inst2', 'exam', 'art'].includes(v) ? fr[v] || '' : ''; }
   if (t.dataset.change === 'staff-date') { S.stDate = t.value || today(); render(); }
   if (t.dataset.change === 'ap-date') { S.apDate = t.value || today(); S.draft = null; render(); }
   if (t.dataset.change === 'ap-reason') { S.draft.reasons[t.dataset.s] = t.value; S.draft.dirty = true; } });
@@ -1483,8 +1544,8 @@ const FORMS = {
     if (ok) closeSheet(); },
   'verify-code': f => { const p = parseScan(new FormData(f).get('code')); if (p) { stopScan(); S.sheet = sheetVerify(p); render(); } else toast(T('Numéro de carte incomplet.', 'Incomplete card number.')); },
   settings: async f => { const fd = new FormData(f); const teachers = {}, fees = {};
-    LEVELS.forEach(l => { teachers[l.id] = String(fd.get('t-' + l.id) || '').trim(); fees[l.id] = {}; ['reg','t1','t2','t3'].forEach(k => fees[l.id][k] = num(fd.get(`f-${l.id}-${k}`))); });
-    await write(db => db.doc('config/school').set({...cfg(), teachers, fees, absenceThreshold: Math.max(1, num(fd.get('abs-th')) || 5), directorName: String(fd.get('dir-name') || '').trim(), assistantName: String(fd.get('adj-name') || '').trim(), secretaryName: String(fd.get('sec-name') || '').trim(), startTime: fd.get('start-t') || '07:30', endTime: fd.get('end-t') || '15:30', gapTolerance: Math.max(1, num(fd.get('gap-t')) || 10), updatedAt: nowISO()}), T('Réglages enregistrés', 'Settings saved')); },
+    LEVELS.forEach(l => { teachers[l.id] = String(fd.get('t-' + l.id) || '').trim(); fees[l.id] = {}; FEE_PARTS.forEach(([k]) => fees[l.id][k] = num(fd.get(`f-${l.id}-${k}`))); });
+    await write(db => db.doc('config/school').set({...cfg(), teachers, fees, absenceThreshold: Math.max(1, num(fd.get('abs-th')) || 5), directorName: String(fd.get('dir-name') || '').trim(), assistantName: String(fd.get('adj-name') || '').trim(), secretaryName: String(fd.get('sec-name') || '').trim(), startTime: fd.get('start-t') || '07:00', endTime: fd.get('end-t') || '15:00', hoursModel: 2, feeModel: 2, due1: fd.get('due1') || due1(), due2: fd.get('due2') || due2(), gapTolerance: Math.max(1, num(fd.get('gap-t')) || 10), updatedAt: nowISO()}), T('Réglages enregistrés', 'Settings saved')); },
   stat: async f => { const fd = new FormData(f), year = String(fd.get('year')).trim(); if (!/^\d{4}-\d{4}$/.test(year)) { toast(T('Année au format 2024-2025', 'Use the format 2024-2025')); return; }
     const body = {year, ce: {cand: num(fd.get('ce-cand')), pass: num(fd.get('ce-pass'))}, fslc: {cand: num(fd.get('fslc-cand')), pass: num(fd.get('fslc-pass'))}, admitted: String(fd.get('admitted') || '').split('\n').map(x => x.trim()).filter(Boolean)};
     if (body.ce.pass > body.ce.cand || body.fslc.pass > body.fslc.cand) { toast(T('Le nombre d’admis dépasse celui des candidats.', 'More passes than candidates.')); return; }
